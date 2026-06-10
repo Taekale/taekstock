@@ -1,0 +1,481 @@
+# -*- coding: utf-8 -*-
+import yfinance as yf
+import pandas as pd
+from datetime import datetime
+import concurrent.futures
+from . import db
+
+# Predefined Top 100 US Stock Tickers (S&P 100 / Nasdaq Mega Caps)
+TOP_US_TICKERS = [
+    "AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOGL", "GOOG", "TSLA", "BRK-B", "LLY",
+    "AVGO", "JPM", "UNH", "V", "MA", "COST", "HD", "PG", "NFLX", "AMD",
+    "JNJ", "ABBV", "MRK", "ORCL", "WMT", "BAC", "PEP", "CVX", "KO", "TMO",
+    "CRM", "ADBE", "ACN", "QCOM", "CSCO", "MCD", "ABT", "INTC", "TXN", "GE",
+    "AMGN", "DIS", "ISRG", "IBM", "CAT", "AXP", "PFE", "PM", "MS", "NKE",
+    "GS", "HON", "CMCSA", "BKNG", "COP", "SPGI", "LOW", "RTX", "AMAT", "TJX",
+    "LRCX", "UNP", "PLTR", "PANW", "FI", "MU", "REGN", "UBER", "ETN", "MDT",
+    "BMY", "DE", "SYK", "SBUX", "ADP", "LMT", "VRTX", "ELV", "CI", "GILD",
+    "GEV", "MDLZ", "CRWD", "PGR", "ADI", "MMC", "BSX", "MELI", "CB", "ANET",
+    "SO", "HCA", "KLAC", "WM", "DHR", "ZTS"
+]
+
+# Predefined Top 100 KR Stock Tickers (KOSPI & KOSDAQ Large Caps)
+TOP_KR_TICKERS = [
+    "005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS", "000270.KS", "068270.KS", "005490.KS", "035420.KS", "035720.KS",
+    "051910.KS", "006400.KS", "105560.KS", "055550.KS", "302440.KQ", "012330.KS", "032830.KS", "066570.KS", "086790.KS", "096770.KS",
+    "000810.KS", "033780.KS", "003550.KS", "015760.KS", "009150.KS", "017670.KS", "018260.KS", "011200.KS", "010950.KS", "251270.KS",
+    "034730.KS", "005830.KS", "000720.KS", "004020.KS", "002790.KS", "088350.KS", "097950.KS", "028260.KS", "316140.KS", "326030.KS",
+    "036570.KS", "009830.KS", "011170.KS", "024110.KS", "034220.KS", "161390.KS", "009540.KS", "010130.KS", "010140.KS", "280360.KS",
+    "047050.KS", "051900.KS", "071050.KS", "090430.KS", "180640.KS", "267250.KS", "247540.KQ", "091990.KQ", "068760.KQ", "293490.KQ",
+    "035900.KQ", "253450.KQ", "192080.KQ", "112040.KQ", "058470.KQ", "036830.KQ", "066970.KQ", "022100.KQ", "278280.KQ", "214150.KQ",
+    "145020.KQ", "381970.KQ", "000100.KS", "000120.KS", "000210.KS", "000240.KS", "000990.KS", "001040.KS", "001450.KS", "001800.KS",
+    "002380.KS", "003410.KS", "003490.KS", "004370.KS", "005250.KS", "005440.KS", "008770.KS", "009420.KS", "010060.KS", "010120.KS",
+    "011070.KS", "011780.KS", "012450.KS", "014680.KS", "016360.KS", "017800.KS", "020150.KS", "021240.KS", "023530.KS", "029780.KS"
+]
+
+def fetch_single_stock_metrics(ticker_symbol, name_override=None):
+    """
+    Fetches raw stock details from Yahoo Finance.
+    Handles fallbacks for international tickers.
+    """
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+        if not info or "currentPrice" not in info and "regularMarketPrice" not in info and "previousClose" not in info:
+            # Maybe invalid ticker or API failed
+            return None
+            
+        name = name_override or info.get("longName") or info.get("shortName") or ticker_symbol
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+        
+        # 1. PER (Price-to-Earnings Ratio) with Fallbacks
+        per = info.get("trailingPE")
+        if per is None:
+            per = info.get("forwardPE")
+        if per is None:
+            per = info.get("priceEpsCurrentYear")
+        if per is None:
+            eps = info.get("epsCurrentYear")
+            if eps and price and eps != 0:
+                per = price / eps
+
+        # 2. ROE (Return on Equity)
+        roe = info.get("returnOnEquity")
+        if roe is not None:
+            # Store ROE as a percentage
+            roe = roe * 100.0
+
+        # 3. PBR (Price-to-Book Ratio) with Fallbacks
+        pbr = info.get("priceToBook")
+        if pbr is None:
+            # Calculate from: Equity = Net Income / ROE (as decimal)
+            shares = info.get("sharesOutstanding")
+            net_income = info.get("netIncomeToCommon")
+            # Convert ROE back to decimal for calculation if needed
+            roe_dec = (roe / 100.0) if roe else None
+            if roe_dec and net_income and shares and price and roe_dec != 0 and shares != 0:
+                try:
+                    equity = net_income / roe_dec
+                    book_value_per_share = equity / shares
+                    pbr = price / book_value_per_share
+                except ZeroDivisionError:
+                    pbr = None
+
+        # 4. PSR (Price-to-Sales Ratio) with Fallbacks
+        psr = info.get("priceToSalesTrailing12Months")
+        if psr is None:
+            market_cap = info.get("marketCap")
+            revenue = info.get("totalRevenue")
+            if market_cap and revenue and revenue != 0:
+                psr = market_cap / revenue
+
+        market = "KR" if ticker_symbol.endswith((".KS", ".KQ")) else "US"
+        
+        # 5. Volume and Trading Value (거래량 및 거래대금)
+        volume = info.get("volume") or info.get("regularMarketVolume") or info.get("averageVolume") or 0
+        trading_value = price * volume if price and volume else 0.0
+
+        # 6. News Sentiment Analysis (호재 점수)
+        sentiment_score = 0.5 # Neutral fallback
+        try:
+            news = ticker.news
+            if news:
+                pos_words = ["buy", "up", "growth", "profit", "surpass", "bullish", "upgrade", "beat", "positive", "high", "success", "gain", "raise", "increase", "jump", "호재", "상승", "성장", "흑자", "돌파", "매수", "개선"]
+                neg_words = ["sell", "down", "loss", "decline", "bearish", "downgrade", "miss", "negative", "low", "fail", "risk", "drop", "fall", "decrease", "cut", "악재", "하락", "손실", "적자", "우려", "매도", "부진"]
+                
+                pos_count = 0
+                neg_count = 0
+                for article in news:
+                    title = article.get("title", "").lower()
+                    has_pos = any(w in title for w in pos_words)
+                    has_neg = any(w in title for w in neg_words)
+                    if has_pos and not has_neg:
+                        pos_count += 1
+                    elif has_neg and not has_pos:
+                        neg_count += 1
+                
+                total_classified = pos_count + neg_count
+                if total_classified > 0:
+                    sentiment_score = 0.5 + 0.5 * (pos_count - neg_count) / total_classified
+        except Exception:
+            pass
+            
+        return {
+            "ticker": ticker_symbol,
+            "name": name,
+            "market": market,
+            "price": price,
+            "per": per,
+            "pbr": pbr,
+            "psr": psr,
+            "roe": roe,
+            "volume": int(volume) if volume else 0,
+            "trading_value": float(trading_value) if trading_value else 0.0,
+            "sentiment_score": float(sentiment_score),
+            "buy_score": None, # calculated in rank step
+            "recommendation": None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    except Exception as e:
+        print(f"Error fetching metrics for {ticker_symbol}: {e}")
+        return None
+
+def fetch_and_update_stock(ticker_symbol, name_override=None):
+    """
+    Fetch stock metrics and save directly to DB cache.
+    """
+    data = fetch_single_stock_metrics(ticker_symbol, name_override)
+    if data:
+        db.save_stock(data)
+        return data
+    return None
+
+def sync_krx_mappings_from_kind():
+    """
+    Downloads list of all listed Korean companies from KIND (KRX)
+    and saves the mappings in the database.
+    """
+    try:
+        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        df = pd.read_html(url, header=0, encoding='cp949')[0]
+        
+        mappings = []
+        for _, row in df.iterrows():
+            ticker_raw = str(row['종목코드']).zfill(6)
+            name = str(row['회사명'])
+            market_segment = str(row['시장구분'])
+            
+            # Map suffix based on market segment
+            if "유가" in market_segment or "코스피" in market_segment:
+                suffix = ".KS"
+            elif "코스닥" in market_segment:
+                suffix = ".KQ"
+            else:
+                # KONEX or others
+                suffix = ".KQ"
+                
+            mappings.append({
+                "ticker": ticker_raw,
+                "name": name,
+                "market_type": market_segment,
+                "yf_ticker": f"{ticker_raw}{suffix}"
+            })
+            
+        db.save_krx_mappings(mappings)
+        print(f"Successfully synced {len(mappings)} KRX mappings from KIND.")
+        return True
+    except Exception as e:
+        print(f"Error syncing mappings from KIND: {e}")
+        return False
+
+# Global background sync state (reported in Korean)
+sync_state = {
+    "status": "idle",
+    "message": "대기 중",
+    "percent": 0
+}
+
+progress_lock = concurrent.futures.thread.threading.Lock()
+progress_counter = 0
+
+def update_sync_state(status, message, percent):
+    global sync_state
+    sync_state["status"] = status
+    sync_state["message"] = message
+    sync_state["percent"] = percent
+    print(f"[{percent}%] {message}")
+
+def calculate_market_ranks(market):
+    """
+    Loads all cached stocks for a market, computes relative rankings,
+    trains a local XGBoost Factor Model, updates buy_score and recommendation,
+    and writes back to DB.
+    """
+    stocks = db.get_all_cached_stocks(market)
+    if not stocks:
+        return
+    df = pd.DataFrame(stocks)
+    # --- Part 1: Standard Relative Percentile Ranks ---
+    # 1. PER score: Lower positive is better.
+    df_per = df[df['per'].notna() & (df['per'] > 0)].copy()
+    if not df_per.empty:
+        df_per = df_per.sort_values(by='per', ascending=True)
+        V = len(df_per)
+        df_per['per_score'] = [1.0 - (i / (V - 1) if V > 1 else 0.0) for i in range(V)]
+    else:
+        df_per['per_score'] = []
+    df = df.merge(df_per[['ticker', 'per_score']], on='ticker', how='left')
+    df['per_score'] = df['per_score'].fillna(0.0)
+    
+    # 2. PBR score: Lower positive is better.
+    df_pbr = df[df['pbr'].notna() & (df['pbr'] > 0)].copy()
+    if not df_pbr.empty:
+        df_pbr = df_pbr.sort_values(by='pbr', ascending=True)
+        V = len(df_pbr)
+        df_pbr['pbr_score'] = [1.0 - (i / (V - 1) if V > 1 else 0.0) for i in range(V)]
+    else:
+        df_pbr['pbr_score'] = []
+    df = df.merge(df_pbr[['ticker', 'pbr_score']], on='ticker', how='left')
+    df['pbr_score'] = df['pbr_score'].fillna(0.0)
+    
+    # 3. PSR score: Lower positive is better.
+    df_psr = df[df['psr'].notna() & (df['psr'] > 0)].copy()
+    if not df_psr.empty:
+        df_psr = df_psr.sort_values(by='psr', ascending=True)
+        V = len(df_psr)
+        df_psr['psr_score'] = [1.0 - (i / (V - 1) if V > 1 else 0.0) for i in range(V)]
+    else:
+        df_psr['psr_score'] = []
+    df = df.merge(df_psr[['ticker', 'psr_score']], on='ticker', how='left')
+    df['psr_score'] = df['psr_score'].fillna(0.0)
+    
+    # 4. ROE score: Higher is better.
+    df_roe = df[df['roe'].notna() & (df['roe'] > 0)].copy()
+    if not df_roe.empty:
+        df_roe = df_roe.sort_values(by='roe', ascending=True)
+        V = len(df_roe)
+        df_roe['roe_score'] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_roe['roe_score'] = []
+    df = df.merge(df_roe[['ticker', 'roe_score']], on='ticker', how='left')
+    df['roe_score'] = df['roe_score'].fillna(0.0)
+    
+    # 5. Volume score: Higher is better.
+    df_vol = df[df['volume'].notna() & (df['volume'] > 0)].copy()
+    if not df_vol.empty:
+        df_vol = df_vol.sort_values(by='volume', ascending=True)
+        V = len(df_vol)
+        df_vol['volume_score'] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_vol['volume_score'] = []
+    df = df.merge(df_vol[['ticker', 'volume_score']], on='ticker', how='left')
+    df['volume_score'] = df['volume_score'].fillna(0.0)
+    
+    # 6. Trading Value score: Higher is better.
+    df_val = df[df['trading_value'].notna() & (df['trading_value'] > 0)].copy()
+    if not df_val.empty:
+        df_val = df_val.sort_values(by='trading_value', ascending=True)
+        V = len(df_val)
+        df_val['trading_value_score'] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_val['trading_value_score'] = []
+    df = df.merge(df_val[['ticker', 'trading_value_score']], on='ticker', how='left')
+    df['trading_value_score'] = df['trading_value_score'].fillna(0.0)
+    
+    # 7. Sentiment score rank: Higher is better.
+    df_sent = df[df['sentiment_score'].notna()].copy()
+    if not df_sent.empty:
+        df_sent = df_sent.sort_values(by='sentiment_score', ascending=True)
+        V = len(df_sent)
+        df_sent['sentiment_score_rank'] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_sent['sentiment_score_rank'] = []
+    df = df.merge(df_sent[['ticker', 'sentiment_score_rank']], on='ticker', how='left')
+    df['sentiment_score_rank'] = df['sentiment_score_rank'].fillna(0.5)
+    
+    # --- Part 2: XGBoost + Factor Model Integration ---
+    try:
+        import xgboost as xgb
+        import numpy as np
+        
+        # Calculate Target Buy Score for each stock:
+        # Balanced multi-factor target score:
+        # Valuation (PER, PBR, PSR): 40% (13.3% each)
+        # Quality (ROE): 30%
+        # News Sentiment (호재): 20%
+        # Liquidity (Volume, Trading Value): 10% (5% each)
+        df['target_score'] = (
+            0.30 * df['roe_score'] +
+            0.20 * df['sentiment_score_rank'] +
+            0.133 * df['per_score'] + 0.133 * df['pbr_score'] + 0.134 * df['psr_score'] +
+            0.05 * df['volume_score'] + 0.05 * df['trading_value_score']
+        )
+        
+        if len(df) < 15:
+            # Fallback for small datasets (e.g. testing) to avoid XGBoost predicting mean
+            df['xgb_buy_score'] = df['target_score']
+        else:
+            # We train XGBoost on both raw financial values (imputed) and relative ranks
+            features = [
+                'per', 'pbr', 'psr', 'roe', 'volume', 'trading_value', 'sentiment_score',
+                'per_score', 'pbr_score', 'psr_score', 'roe_score', 'volume_score', 'trading_value_score', 'sentiment_score_rank'
+            ]
+            
+            # Make a copy and impute missing/negative values for safe ML training
+            train_df = df.copy()
+            for col in ['per', 'pbr', 'psr', 'roe', 'volume', 'trading_value', 'sentiment_score']:
+                median_val = train_df[train_df[col].notna() & (train_df[col] > 0)][col].median()
+                if pd.isna(median_val) or median_val is None:
+                    median_val = 0.0
+                train_df[col] = train_df[col].fillna(median_val)
+                # Clip negative raw values for model stability
+                train_df.loc[train_df[col] < 0, col] = 0.0
+                
+            X = train_df[features].values
+            y = train_df['target_score'].values
+            
+            # Train a local small-tree XGBoost model with regularization to prevent overfitting on ~100-200 stocks
+            model = xgb.XGBRegressor(
+                n_estimators=50,
+                max_depth=3,
+                learning_rate=0.08,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=1.5,
+                reg_alpha=0.5,
+                random_state=42
+            )
+            model.fit(X, y)
+            
+            # Predict robust buy_scores
+            predictions = model.predict(X)
+            predictions = np.clip(predictions, 0.0, 1.0)
+            df['xgb_buy_score'] = predictions
+        
+    except Exception as e:
+        print(f"XGBoost training failed, falling back to standard scoring: {e}")
+        df['xgb_buy_score'] = (df['per_score'] + df['pbr_score'] + df['psr_score'] + df['roe_score']) / 4.0
+    
+    # Save scores and recommendations back to DB
+    # Identify valid stocks and map their predicted buy_scores to relative percentiles
+    valid_indices = []
+    valid_scores = []
+    
+    for idx, row in df.iterrows():
+        missing_count = sum(1 for field in ['per', 'pbr', 'psr', 'roe'] if pd.isna(row[field]) or row[field] is None or (field != 'roe' and row[field] <= 0))
+        if missing_count < 3:
+            valid_indices.append(idx)
+            valid_scores.append(float(row['xgb_buy_score']))
+            
+    score_percentile_map = {}
+    if valid_indices:
+        # Sort valid indices by score descending (highest score gets rank 0)
+        sorted_indices = [x for _, x in sorted(zip(valid_scores, valid_indices), reverse=True)]
+        total_valid = len(sorted_indices)
+        for rank_idx, idx in enumerate(sorted_indices):
+            percentile = rank_idx / (total_valid - 1) if total_valid > 1 else 0.5
+            score_percentile_map[idx] = percentile
+            
+    for idx, row in df.iterrows():
+        missing_count = sum(1 for field in ['per', 'pbr', 'psr', 'roe'] if pd.isna(row[field]) or row[field] is None or (field != 'roe' and row[field] <= 0))
+        
+        if missing_count >= 3:
+            buy_score = None
+            recommendation = "데이터 부족"
+        else:
+            buy_score = float(row['xgb_buy_score'])
+            percentile = score_percentile_map.get(idx, 0.5)
+            
+            # Map percentile rank to rating
+            if percentile <= 0.10:      # Top 10%
+                recommendation = "강력 매수"
+            elif percentile <= 0.25:    # Top 10% - 25% (Next 15%)
+                recommendation = "매수"
+            elif percentile <= 0.75:    # Top 25% - 75% (Middle 50%)
+                recommendation = "관망"
+            elif percentile <= 0.90:    # Top 75% - 90% (Next 15%)
+                recommendation = "매도"
+            else:                       # Bottom 10%
+                recommendation = "강력 매도"
+                
+        db.save_stock({
+            "ticker": row["ticker"],
+            "name": row["name"],
+            "market": row["market"],
+            "price": row["price"],
+            "per": row["per"],
+            "pbr": row["pbr"],
+            "psr": row["psr"],
+            "roe": row["roe"],
+            "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
+            "trading_value": float(row["trading_value"]) if not pd.isna(row["trading_value"]) else 0.0,
+            "sentiment_score": float(row["sentiment_score"]) if not pd.isna(row["sentiment_score"]) else 0.5,
+            "buy_score": buy_score,
+            "recommendation": recommendation,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+def run_sync_all():
+    """
+    Runs background sync for all pre-defined top US and KR stocks,
+    populating metrics and calculating overall ranks.
+    """
+    global progress_counter
+    
+    # Reset progress counter
+    with progress_lock:
+        progress_counter = 0
+        
+    # 1. Sync KRX name mapping
+    update_sync_state("running", "한국거래소(KRX) 상장 종목 목록 다운로드 및 이름 매핑 중...", 5)
+    sync_krx_mappings_from_kind()
+    update_sync_state("running", "상장사 매핑 완료 (2,700여개 종목 완료). 미국 주식 데이터 수집 시작...", 15)
+    
+    # 2. Fetch US stocks
+    total_us = len(TOP_US_TICKERS)
+    
+    def fetch_us_task(ticker):
+        global progress_counter
+        fetch_and_update_stock(ticker)
+        with progress_lock:
+            progress_counter += 1
+            pct = 15 + int(30 * progress_counter / total_us) # goes from 15% to 45%
+            update_sync_state("running", f"미국 대표 주식 재무 정보 수집 중 ({progress_counter}/{total_us})...", pct)
+            
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(fetch_us_task, t) for t in TOP_US_TICKERS]
+        concurrent.futures.wait(futures)
+        
+    update_sync_state("running", "미국 주식 지표 수집 완료. XGBoost + 팩터 가치 평가 모델 빌드 중...", 46)
+    calculate_market_ranks("US")
+    update_sync_state("running", "미국 주식 랭킹 모델 빌드 완료. 한국 주식 데이터 수집 시작...", 50)
+    
+    # Reset progress counter for KR stocks
+    with progress_lock:
+        progress_counter = 0
+        
+    # 3. Fetch KR stocks
+    total_kr = len(TOP_KR_TICKERS)
+    kr_tickers_with_names = []
+    for ticker in TOP_KR_TICKERS:
+        clean_code = ticker.split('.')[0]
+        mapped = db.search_krx_ticker(clean_code)
+        name_override = mapped[1] if mapped else None
+        kr_tickers_with_names.append((ticker, name_override))
+        
+    def fetch_kr_task(ticker, name):
+        global progress_counter
+        fetch_and_update_stock(ticker, name)
+        with progress_lock:
+            progress_counter += 1
+            pct = 50 + int(35 * progress_counter / total_kr) # goes from 50% to 85%
+            update_sync_state("running", f"한국 대표 주식 재무 정보 수집 중 ({progress_counter}/{total_kr})...", pct)
+            
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(fetch_kr_task, t, n) for t, n in kr_tickers_with_names]
+        concurrent.futures.wait(futures)
+        
+    update_sync_state("running", "한국 주식 지표 수집 완료. XGBoost + 팩터 가치 평가 모델 빌드 중...", 88)
+    calculate_market_ranks("KR")
+    
+    update_sync_state("idle", "모든 미국 및 한국 주식 데이터 동기화와 XGBoost 팩터 평가가 성공적으로 완료되었습니다!", 100)

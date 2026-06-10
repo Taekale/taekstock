@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>스마트 주식 추천 시스템 | Smart Stock Recommendation</title>
+    <!-- Google Fonts for premium typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for sleek icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-logo">
+                <i class="fa-solid fa-chart-line-up logo-icon"></i>
+                <div class="logo-text">
+                    <h1>스마트 주식 추천</h1>
+                    <p>PER • ROE • PBR • PSR 종합 평가 시스템</p>
+                </div>
+            </div>
+            <div class="header-status" id="db-status-panel">
+                <div class="status-item">
+                    <span class="status-label">US 캐시</span>
+                    <span class="status-value" id="us-cache-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">KR 캐시</span>
+                    <span class="status-value" id="kr-cache-count">0</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Search Section -->
+        <section class="search-section">
+            <div class="search-box-container">
+                <div class="search-box">
+                    <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                    <input type="text" id="search-input" placeholder="미국 티커(예: AAPL) 또는 한국 종목명(예: 삼성전자)을 입력하세요..." autocomplete="off">
+                    <button id="btn-search">검색</button>
+                </div>
+                <p class="search-hint">DB에 없는 종목은 실시간으로 Yahoo Finance에서 분석하여 상대 평가 그룹에 추가합니다.</p>
+            </div>
+        </section>
+
+        <!-- Market Toggle & Controls -->
+        <section class="controls-section">
+            <div class="market-tabs">
+                <button class="tab-btn active" data-market="US">
+                    <i class="fa-solid fa-flag-usa"></i> 미국 주식 (US)
+                </button>
+                <button class="tab-btn" data-market="KR">
+                    <i class="fa-solid fa-coins"></i> 한국 주식 (KR)
+                </button>
+            </div>
+            <div class="last-updated-time">
+                <i class="fa-solid fa-clock"></i> 마지막 계산: <span id="last-calc-time">-</span>
+            </div>
+        </section>
+
+        <!-- Main Dashboard content -->
+        <main class="dashboard-content">
+            <!-- Loading Indicator -->
+            <div class="loading-overlay" id="dashboard-loading">
+                <div class="spinner"></div>
+                <p>주식 종목 평가 데이터 불러오는 중...</p>
+            </div>
+
+            <!-- Buy Panel -->
+            <div class="recommend-panel buy-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fa-solid fa-circle-arrow-up text-buy"></i>
+                        <h2>강력 추천 매수 TOP 10</h2>
+                    </div>
+                    <span class="panel-subtitle">가장 저평가되고 수익성이 높은 종목</span>
+                </div>
+                <div class="cards-list" id="buy-list-container">
+                    <!-- Cards will be populated here -->
+                </div>
+            </div>
+
+            <!-- Sell Panel -->
+            <div class="recommend-panel sell-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fa-solid fa-circle-arrow-down text-sell"></i>
+                        <h2>비추천 / 매도 TOP 10</h2>
+                    </div>
+                    <span class="panel-subtitle">고평가되었거나 수익성이 떨어지는 종목</span>
+                </div>
+                <div class="cards-list" id="sell-list-container">
+                    <!-- Cards will be populated here -->
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>© 2026 스마트 주식 추천 시스템. 이 시스템은 투자 참고용 데이터이며 실제 투자 책임은 투자자 본인에게 있습니다.</p>
+        </footer>
+    </div>
+
+    <!-- Stock Detail Modal -->
+    <div class="modal-backdrop" id="stock-modal">
+        <div class="modal-container">
+            <button class="modal-close-btn" id="btn-close-modal">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            
+            <div class="modal-header">
+                <div class="modal-header-main">
+                    <span class="modal-market-tag" id="modal-market-tag">US</span>
+                    <h2 id="modal-stock-name">Apple Inc.</h2>
+                    <span class="modal-ticker" id="modal-stock-ticker">AAPL</span>
+                </div>
+                <div class="modal-price-box">
+                    <span class="modal-price-label">현재가</span>
+                    <span class="modal-price" id="modal-stock-price">$0.00</span>
+                </div>
+            </div>
+
+            <div class="modal-score-section">
+                <div class="modal-recommend-badge" id="modal-recommendation">강력 매수</div>
+                <div class="modal-score-bar-container">
+                    <div class="modal-score-bar-header">
+                        <span>종합 저평가/수익성 점수 (상대백분위)</span>
+                        <strong id="modal-score-text">0.0%</strong>
+                    </div>
+                    <div class="modal-score-bar-bg">
+                        <div class="modal-score-bar-fill" id="modal-score-fill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-grid-metrics">
+                <!-- PER Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">PER <small>(주가수익비율)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="주가 대비 주당순이익 비율. 낮을수록 저평가."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-per">-</div>
+                    <div class="metric-evaluation" id="modal-eval-per">데이터 없음</div>
+                </div>
+
+                <!-- PBR Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">PBR <small>(주가순자산비율)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="주가 대비 주당순자산 비율. 낮을수록 자산 대비 저평가."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-pbr">-</div>
+                    <div class="metric-evaluation" id="modal-eval-pbr">데이터 없음</div>
+                </div>
+
+                <!-- PSR Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">PSR <small>(주가매출비율)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="주가 대비 주당매출액 비율. 낮을수록 매출 대비 저평가."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-psr">-</div>
+                    <div class="metric-evaluation" id="modal-eval-psr">데이터 없음</div>
+                </div>
+
+                <!-- ROE Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">ROE <small>(자기자본이익률)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="기업의 자본 효율성. 높을수록 이익 창출 능력이 우수."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-roe">-</div>
+                    <div class="metric-evaluation" id="modal-eval-roe">데이터 없음</div>
+                </div>
+
+                <!-- Volume Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">거래량 <small>(Volume)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="당일 체결된 주식의 총 수량."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-volume">-</div>
+                    <div class="metric-evaluation" id="modal-eval-volume">데이터 없음</div>
+                </div>
+
+                <!-- Trading Value Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">거래대금 <small>(Value)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="주가와 거래량을 곱한 총 거래 규모. 유동성을 나타냄."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-trading-value">-</div>
+                    <div class="metric-evaluation" id="modal-eval-trading-value">데이터 없음</div>
+                </div>
+
+                <!-- Sentiment Card -->
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-title">뉴스 호재 비율 <small>(Sentiment)</small></span>
+                        <i class="fa-solid fa-circle-info tooltip" title="최근 관련 뉴스 기사 제목의 긍정/부정 비율. 높을수록 호재."></i>
+                    </div>
+                    <div class="metric-value" id="modal-metric-sentiment">-</div>
+                    <div class="metric-evaluation" id="modal-eval-sentiment">데이터 없음</div>
+                </div>
+            </div>
+
+            <div class="modal-analysis-section">
+                <h3><i class="fa-solid fa-brain"></i> AI 종합 분석 & 투자 의견</h3>
+                <p id="modal-analysis-text">주식을 평가 중입니다...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Synchronization Progress Modal -->
+    <div class="modal-backdrop" id="sync-modal">
+        <div class="modal-container" style="max-width: 550px; text-align: center;">
+            <h3 style="font-size: 1.8rem; font-weight: 800; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; gap: 12px;">
+                <i class="fa-solid fa-rotate sync-icon loading" style="color: var(--accent-primary);"></i>
+                데이터 동기화 및 가치 분석
+            </h3>
+            <div class="sync-progress-container">
+                <div class="sync-progress-bar-bg">
+                    <div class="sync-progress-bar-fill" id="sync-progress-fill"></div>
+                </div>
+                <div class="sync-status-details">
+                    <span id="sync-progress-message">동기화 준비 중...</span>
+                    <span id="sync-progress-percent">0%</span>
+                </div>
+            </div>
+            <p style="color: var(--text-muted); font-size: 1rem; line-height: 1.6; margin-top: 10px;">
+                서버에서 실시간 재무 지표를 다운로드하고 있으며,<br>
+                XGBoost + 팩터 가치 평가 모델을 학습하고 있습니다. 잠시만 기다려 주세요.
+            </p>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
