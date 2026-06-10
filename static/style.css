@@ -885,6 +885,48 @@ body {
     font-size: 1.05rem;
 }
 
+/* Stock Modal Horizontal Expansion (Desktop) */
+#stock-modal .modal-container {
+    max-width: 1200px;
+    display: grid;
+    grid-template-areas:
+        "header header"
+        "score score"
+        "metrics analysis";
+    grid-template-columns: 1.3fr 1fr;
+    gap: 0 32px;
+}
+
+#stock-modal .modal-header {
+    grid-area: header;
+}
+
+#stock-modal .modal-score-section {
+    grid-area: score;
+}
+
+#stock-modal .modal-grid-metrics {
+    grid-area: metrics;
+    margin-bottom: 0;
+}
+
+#stock-modal .modal-analysis-section {
+    grid-area: analysis;
+    height: 100%;
+}
+
+/* Responsive collapse back to vertical list for tablets and mobile */
+@media (max-width: 992px) {
+    #stock-modal .modal-container {
+        max-width: 760px;
+        display: block; /* Go back to vertical stack */
+    }
+    #stock-modal .modal-grid-metrics {
+        margin-bottom: 28px;
+    }
+}
+
+
 /* Tooltip */
 .tooltip {
     cursor: pointer;
