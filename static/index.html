@@ -15,6 +15,21 @@
 <body>
     <div class="glass-bg"></div>
     <div class="app-container">
+        <!-- Top Info Bar (Sleek Visitor Counter) -->
+        <div class="top-info-bar">
+            <div class="service-launch-date">
+                <i class="fa-solid fa-calendar-days icon-launch"></i> 첫 개시: 2026.06.10
+            </div>
+            <span class="visitor-divider">|</span>
+            <div class="visitor-counter">
+                <span class="visitor-label"><i class="fa-solid fa-users"></i> 오늘 방문자수:</span>
+                <span class="visitor-value" id="today-visitors">0</span>
+                <span class="visitor-divider">|</span>
+                <span class="visitor-label">누적 방문자수:</span>
+                <span class="visitor-value" id="total-visitors">0</span>
+            </div>
+        </div>
+
         <!-- Header -->
         <header class="app-header">
             <div class="header-logo">
@@ -26,12 +41,20 @@
             </div>
             <div class="header-status" id="db-status-panel">
                 <div class="status-item">
-                    <span class="status-label">US 캐시</span>
+                    <span class="status-label">US 주식</span>
                     <span class="status-value" id="us-cache-count">0</span>
                 </div>
                 <div class="status-item">
-                    <span class="status-label">KR 캐시</span>
+                    <span class="status-label">KR 주식</span>
                     <span class="status-value" id="kr-cache-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">미국 ETF</span>
+                    <span class="status-value" id="etf-us-cache-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">한국 ETF</span>
+                    <span class="status-value" id="etf-kr-cache-count">0</span>
                 </div>
             </div>
         </header>
@@ -56,6 +79,12 @@
                 </button>
                 <button class="tab-btn" data-market="KR">
                     <i class="fa-solid fa-coins"></i> 한국 주식 (KR)
+                </button>
+                <button class="tab-btn" data-market="ETF_US">
+                    <i class="fa-solid fa-chart-pie"></i> 미국 ETF (ETF_US)
+                </button>
+                <button class="tab-btn" data-market="ETF_KR">
+                    <i class="fa-solid fa-chart-line"></i> 한국 ETF (ETF_KR)
                 </button>
             </div>
             <div class="last-updated-time">

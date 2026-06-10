@@ -1,4 +1,4 @@
-// --- US Stocks Korean Name Mappings ---
+// --- US/KR Stocks & ETFs Korean Name Mappings ---
 const US_KOREAN_NAMES = {
     "AAPL": "애플", "MSFT": "마이크로소프트", "AMZN": "아마존", "NVDA": "엔비디아", "META": "메타",
     "GOOGL": "구글", "GOOG": "구글", "TSLA": "테슬라", "BRK-B": "버크셔 해서웨이", "LLY": "일라이 릴리",
@@ -18,7 +18,31 @@ const US_KOREAN_NAMES = {
     "LMT": "록히드 마틴", "VRTX": "버텍스 파마슈티컬스", "ELV": "엘레반스 헬스", "CI": "시그나", "GILD": "길리어드 사이언스",
     "GEV": "GE 베르노바", "MDLZ": "몬델리즈", "CRWD": "크라우드스트라이크", "PGR": "프로그레시브", "ADI": "아날로그 디바이스",
     "MMC": "마쉬 앤 맥레넌", "BSX": "보스턴 사이언티픽", "MELI": "메르카도 리브레", "CB": "처브", "ANET": "아리스타 네트웍스",
-    "SO": "서던 컴퍼니", "HCA": "HCA 헬스케어", "KLAC": "KLA", "WM": "웨이스트 매니지먼트", "DHR": "다나허", "ZTS": "조에티스"
+    "SO": "서던 컴퍼니", "HCA": "HCA 헬스케어", "KLAC": "KLA", "WM": "웨이스트 매니지먼트", "DHR": "다나허", "ZTS": "조에티스",
+    // US ETFs
+    "SPY": "S&P 500 지수 ETF",
+    "IVV": "iShares S&P 500 ETF",
+    "VOO": "Vanguard S&P 500 ETF",
+    "QQQ": "나스닥 100 ETF",
+    "DIA": "다우 존스 ETF",
+    "IWM": "러셀 2000 ETF",
+    "SOXX": "필라델피아 반도체 ETF",
+    "SMH": "반도체 25대 기업 ETF",
+    "TQQQ": "나스닥 100 레버리지 3X ETF",
+    "SQQQ": "나스닥 100 인버스 3X ETF",
+    "JEPI": "JP모건 고배당 커버드콜 ETF",
+    "SCHD": "미국 배당 다우존스 ETF (SCHD)",
+    "TLT": "미국 20년 이상 국채 ETF",
+    // KR ETFs
+    "069500": "KODEX 200 (코스피 200 추종)",
+    "122630": "KODEX 레버리지 (코스피 2X)",
+    "252670": "KODEX 200선물인버스2X (곱버스)",
+    "114800": "KODEX 인버스",
+    "229200": "KODEX 코스닥150레버리지",
+    "251340": "KODEX 코스닥150선물인버스",
+    "379800": "KODEX 미국나스닥100레버리지(합성 H)",
+    "453810": "PLUS 미국테크TOP10",
+    "305720": "TIGER 2차전지테마"
 };
 
 // --- Application State ---
@@ -32,6 +56,8 @@ const state = {
 const elements = {
     usCacheCount: document.getElementById('us-cache-count'),
     krCacheCount: document.getElementById('kr-cache-count'),
+    etfUsCacheCount: document.getElementById('etf-us-cache-count'),
+    etfKrCacheCount: document.getElementById('etf-kr-cache-count'),
     btnSyncData: document.getElementById('btn-sync-data'),
     searchInput: document.getElementById('search-input'),
     btnSearch: document.getElementById('btn-search'),
@@ -80,9 +106,9 @@ const elements = {
 // --- Helper Functions ---
 
 // Formatting utilities
-function formatPrice(price, market) {
+function formatPrice(price, market, ticker = '') {
     if (price === null || price === undefined) return '-';
-    if (market === 'US') {
+    if (market === 'US' || market === 'ETF_US' || (market === 'ETF' && ticker && !ticker.endsWith('.KS') && !ticker.endsWith('.KQ'))) {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(price);
     } else {
         return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(price);
@@ -101,7 +127,7 @@ function formatVolume(val) {
 
 function formatTradingValue(val, market) {
     if (val === null || val === undefined || isNaN(val) || val <= 0) return '-';
-    if (market === 'US') {
+    if (market === 'US' || market === 'ETF_US') {
         const millions = val / 1000000;
         return `$${millions.toFixed(1)}M`;
     } else {
@@ -182,6 +208,22 @@ async function fetchDbStatus() {
         state.dbStatus = await res.json();
         elements.usCacheCount.textContent = state.dbStatus.us_cached_stocks;
         elements.krCacheCount.textContent = state.dbStatus.kr_cached_stocks;
+        if (elements.etfUsCacheCount && state.dbStatus.etf_us_cached_stocks !== undefined) {
+            elements.etfUsCacheCount.textContent = state.dbStatus.etf_us_cached_stocks;
+        }
+        if (elements.etfKrCacheCount && state.dbStatus.etf_kr_cached_stocks !== undefined) {
+            elements.etfKrCacheCount.textContent = state.dbStatus.etf_kr_cached_stocks;
+        }
+        
+        // Update visitor stats
+        const todayEl = document.getElementById('today-visitors');
+        const totalEl = document.getElementById('total-visitors');
+        if (todayEl && state.dbStatus.today_visitors !== undefined) {
+            todayEl.textContent = state.dbStatus.today_visitors;
+        }
+        if (totalEl && state.dbStatus.total_visitors !== undefined) {
+            totalEl.textContent = state.dbStatus.total_visitors;
+        }
     } catch (err) {
         console.error(err);
     }
@@ -226,16 +268,20 @@ function renderList(stocks, container, isBuy) {
         card.className = 'stock-card';
         
         const scorePercent = (stock.buy_score * 100).toFixed(1);
-        const priceFormatted = formatPrice(stock.price, stock.market);
+        const priceFormatted = formatPrice(stock.price, stock.market, stock.ticker);
         const badgeClass = getBadgeClass(stock.recommendation);
         
-        // Apply US Korean names in parentheses
+        // Apply US Korean names in parentheses or KR ETF overrides
         let nameToShow = stock.name;
-        if (stock.market === 'US') {
-            const cleanTicker = stock.ticker.split('.')[0].toUpperCase();
-            const krName = US_KOREAN_NAMES[cleanTicker];
+        const cleanTicker = stock.ticker.split('.')[0].toUpperCase();
+        const krName = US_KOREAN_NAMES[cleanTicker];
+        if (stock.market === 'US' || stock.market === 'ETF' || stock.market === 'ETF_US' || stock.market === 'ETF_KR') {
             if (krName) {
-                nameToShow = `${stock.name} (${krName})`;
+                if (stock.ticker.endsWith('.KS') || stock.ticker.endsWith('.KQ')) {
+                    nameToShow = krName;
+                } else {
+                    nameToShow = `${stock.name} (${krName})`;
+                }
             }
         }
         
@@ -265,21 +311,36 @@ function renderList(stocks, container, isBuy) {
 
 // Open Detail Modal & Populate Data
 function openStockModal(stock) {
-    elements.modalMarketTag.textContent = stock.market === 'US' ? 'US MARKET' : 'KR MARKET';
-    
-    // Apply US Korean names in parentheses
-    let nameToShow = stock.name;
+    // Set tag based on market type
     if (stock.market === 'US') {
-        const cleanTicker = stock.ticker.split('.')[0].toUpperCase();
-        const krName = US_KOREAN_NAMES[cleanTicker];
+        elements.modalMarketTag.textContent = 'US MARKET';
+    } else if (stock.market === 'KR') {
+        elements.modalMarketTag.textContent = 'KR MARKET';
+    } else if (stock.market === 'ETF_US') {
+        elements.modalMarketTag.textContent = 'US ETF MARKET';
+    } else if (stock.market === 'ETF_KR') {
+        elements.modalMarketTag.textContent = 'KR ETF MARKET';
+    } else {
+        elements.modalMarketTag.textContent = 'ETF MARKET';
+    }
+    
+    // Apply US Korean names in parentheses or KR ETF overrides
+    let nameToShow = stock.name;
+    const cleanTicker = stock.ticker.split('.')[0].toUpperCase();
+    const krName = US_KOREAN_NAMES[cleanTicker];
+    if (stock.market === 'US' || stock.market === 'ETF' || stock.market === 'ETF_US' || stock.market === 'ETF_KR') {
         if (krName) {
-            nameToShow = `${stock.name} (${krName})`;
+            if (stock.ticker.endsWith('.KS') || stock.ticker.endsWith('.KQ')) {
+                nameToShow = krName;
+            } else {
+                nameToShow = `${stock.name} (${krName})`;
+            }
         }
     }
     
     elements.modalStockName.textContent = nameToShow;
     elements.modalStockTicker.textContent = stock.ticker;
-    elements.modalStockPrice.textContent = formatPrice(stock.price, stock.market);
+    elements.modalStockPrice.textContent = formatPrice(stock.price, stock.market, stock.ticker);
     
     // Set score bar
     const scorePercent = (stock.buy_score * 100).toFixed(1);
@@ -294,16 +355,78 @@ function openStockModal(stock) {
     elements.modalRecommendation.classList.add(recClass);
     
     // Render metrics with fallbacks
-    elements.modalMetricPer.textContent = formatMetric(stock.per);
-    elements.modalMetricPbr.textContent = formatMetric(stock.pbr);
-    elements.modalMetricPsr.textContent = formatMetric(stock.psr);
-    elements.modalMetricRoe.textContent = formatMetric(stock.roe, '%');
     elements.modalMetricVolume.textContent = formatVolume(stock.volume);
     elements.modalMetricTradingValue.textContent = formatTradingValue(stock.trading_value, stock.market);
     elements.modalMetricSentiment.textContent = formatSentiment(stock.sentiment_score);
     
-    // Interpretations and evaluation colors
-    evaluateMetrics(stock);
+    // Dynamic modal restructuring for ETFs
+    const perCard = elements.modalMetricPer.closest('.metric-card');
+    const pbrCard = elements.modalMetricPbr.closest('.metric-card');
+    const psrCard = elements.modalMetricPsr.closest('.metric-card');
+    const roeCard = elements.modalMetricRoe.closest('.metric-card');
+    
+    const perTitle = perCard.querySelector('.metric-title');
+    const pbrTitle = pbrCard.querySelector('.metric-title');
+    const psrTitle = psrCard.querySelector('.metric-title');
+    
+    if (stock.market === 'ETF' || stock.market === 'ETF_US' || stock.market === 'ETF_KR') {
+        // 1. Rebrand PER card to 50-Day MA
+        perTitle.innerHTML = '50일 이동평균 <small>(50 MA)</small>';
+        elements.modalMetricPer.textContent = formatPrice(stock.fifty_day_avg, stock.market, stock.ticker);
+        elements.modalEvalPer.textContent = '단기 추세 지표';
+        elements.modalEvalPer.className = 'metric-evaluation text-neutral';
+        
+        // 2. Rebrand PBR card to 200-Day MA
+        pbrTitle.innerHTML = '200일 이동평균 <small>(200 MA)</small>';
+        elements.modalMetricPbr.textContent = formatPrice(stock.two_hundred_day_avg, stock.market, stock.ticker);
+        elements.modalEvalPbr.textContent = '장기 추세 기준선';
+        elements.modalEvalPbr.className = 'metric-evaluation text-neutral';
+        
+        // 3. Rebrand PSR card to Momentum ratio (50MA / 200MA)
+        psrTitle.innerHTML = '모멘텀 비율 <small>(50MA/200MA)</small>';
+        let ratio = null;
+        if (stock.fifty_day_avg && stock.two_hundred_day_avg) {
+            ratio = stock.fifty_day_avg / stock.two_hundred_day_avg;
+        }
+        elements.modalMetricPsr.textContent = formatMetric(ratio);
+        
+        const evalPsr = elements.modalEvalPsr;
+        evalPsr.className = 'metric-evaluation';
+        if (ratio === null || isNaN(ratio)) {
+            evalPsr.textContent = '데이터 없음';
+            evalPsr.classList.add('text-bad');
+        } else if (ratio > 1.05) {
+            evalPsr.textContent = '강한 상승국면 (골든크로스)';
+            evalPsr.classList.add('text-good');
+        } else if (ratio >= 0.98) {
+            evalPsr.textContent = '보통/박스권 추세';
+            evalPsr.classList.add('text-neutral');
+        } else {
+            evalPsr.textContent = '하락국면 (데드크로스 경계)';
+            evalPsr.classList.add('text-bad');
+        }
+        
+        // 4. Hide ROE card to form a clean 3x2 grid
+        roeCard.style.display = 'none';
+        
+        // Generate ETF custom AI analysis explanation
+        generateEtfExplanation(stock);
+    } else {
+        // Restore standard titles and visibility for stocks
+        perTitle.innerHTML = 'PER <small>(주가수익비율)</small>';
+        pbrTitle.innerHTML = 'PBR <small>(주가순자산비율)</small>';
+        psrTitle.innerHTML = 'PSR <small>(주가매출비율)</small>';
+        roeCard.style.display = 'flex';
+        
+        // Render standard metrics
+        elements.modalMetricPer.textContent = formatMetric(stock.per);
+        elements.modalMetricPbr.textContent = formatMetric(stock.pbr);
+        elements.modalMetricPsr.textContent = formatMetric(stock.psr);
+        elements.modalMetricRoe.textContent = formatMetric(stock.roe, '%');
+        
+        // Run standard evaluations and AI explanation
+        evaluateMetrics(stock);
+    }
     
     // Open Modal
     elements.stockModal.classList.add('active');
@@ -505,6 +628,55 @@ function generateExplanation(stock) {
     elements.modalAnalysisText.innerHTML = html;
 }
 
+function generateEtfExplanation(stock) {
+    const scorePct = (stock.buy_score * 100).toFixed(0);
+    let html = `<strong>${stock.name}</strong>은(는) ETF 상대평가 그룹 내에서 종합 모멘텀 백분위 <strong>상위 ${scorePct}%</strong>를 기록하여 최종 <strong>[${stock.recommendation}]</strong> 판정을 받았습니다.<br><br>`;
+    
+    let bulletPoints = [];
+    let ratio = null;
+    if (stock.fifty_day_avg && stock.two_hundred_day_avg) {
+        ratio = stock.fifty_day_avg / stock.two_hundred_day_avg;
+    }
+    
+    if (ratio) {
+        if (ratio > 1.05) {
+            bulletPoints.push("단기 50일 이동평균선이 장기 200일 선을 크게 상회하는 강한 골든크로스 상승 추세를 나타내고 있습니다.");
+        } else if (ratio >= 0.98) {
+            bulletPoints.push("50일 선과 200일 선이 인접해 있어 박스권 횡보 추세이거나 방향성 탐색 구간입니다.");
+        } else {
+            bulletPoints.push("단기 이평선이 장기 이평선 아래에 머무는 데드크로스 국면으로 단기적인 하락 압력이 우세합니다.");
+        }
+    }
+    
+    if (stock.volume && stock.volume > 10000) {
+        bulletPoints.push("풍부한 거래량과 우수한 유동성을 확보하고 있어 괴리율 및 슬리피지 리스크가 최소화된 우량 ETF 상품입니다.");
+    }
+    
+    if (stock.sentiment_score && stock.sentiment_score >= 0.65) {
+        bulletPoints.push("최근 관련 뉴스 기사의 심리 분석 지표가 매우 긍정적으로 형성되어 시장의 우호적인 수급 유입이 기대됩니다.");
+    } else if (stock.sentiment_score && stock.sentiment_score <= 0.35) {
+        bulletPoints.push("최근 악재성 보도 비율이 다소 높아 보수적인 접근 또는 비중 관리가 권장됩니다.");
+    }
+    
+    if (stock.buy_score >= 0.8) {
+        html += `<span class="text-good">★ 강력 추천 매수 의견:</span> 장단기 모멘텀 정배열 흐름이 압도적이며 거래 유동성 또한 최상위권인 핵심 지수/섹터 ETF입니다. 적립식 및 추세 추종 매수 진입에 매우 유망합니다.`;
+    } else if (stock.buy_score >= 0.65) {
+        html += `<span class="text-good">★ 매수 의견:</span> 모멘텀 흐름이 견조하며 단기 이평선 지지력이 탄탄합니다. 안정적인 비중 확대를 권장합니다.`;
+    } else if (stock.buy_score >= 0.35) {
+        html += `<span class="text-neutral">★ 관망 의견:</span> 단기 추세가 보합권에 있어 섣부른 진입보다는 지지선 확인 후 매수 시점을 잡는 것이 좋습니다.`;
+    } else if (stock.buy_score >= 0.2) {
+        html += `<span class="text-bad">★ 매도 의견:</span> 장기 역배열 진행 중이며 매도세가 지배적입니다. 리스크 예방을 위해 비중을 축소하거나 현금 비중을 늘리는 것이 현명합니다.`;
+    } else {
+        html += `<span class="text-bad">★ 강력 매도 의견:</span> 추세 붕괴 및 하락 모멘텀이 극대화된 상태입니다. 신규 매수를 피하고 반등 시 비중을 과감히 축소하는 리스크 관리가 필요합니다.`;
+    }
+    
+    if (bulletPoints.length > 0) {
+        html += "<br><br><strong>ETF 모멘텀 요약 분석:</strong><ul>" + bulletPoints.map(pt => `<li>${pt}</li>`).join('') + "</ul>";
+    }
+    
+    elements.modalAnalysisText.innerHTML = html;
+}
+
 // Execute stock search
 async function executeSearch() {
     const query = elements.searchInput.value.trim();
@@ -677,8 +849,13 @@ async function init() {
     await loadTop10();
     
     // If DB is empty, automatically trigger sync on startup
-    if (parseInt(elements.usCacheCount.textContent) === 0) {
-        showToast("데이터베이스가 비어 있습니다. 자동으로 최신 주식 평가 모델 동기화를 시작합니다!", "info");
+    const usCount = parseInt(elements.usCacheCount.textContent) || 0;
+    const krCount = parseInt(elements.krCacheCount.textContent) || 0;
+    const etfUsCount = elements.etfUsCacheCount ? (parseInt(elements.etfUsCacheCount.textContent) || 0) : 0;
+    const etfKrCount = elements.etfKrCacheCount ? (parseInt(elements.etfKrCacheCount.textContent) || 0) : 0;
+    
+    if (usCount === 0 || krCount === 0 || etfUsCount === 0 || etfKrCount === 0) {
+        showToast("데이터베이스 캐시가 비어 있거나 누락된 데이터가 있습니다. 최신 주식 평가 모델 동기화를 시작합니다!", "info");
         triggerSync();
     }
     

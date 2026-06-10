@@ -33,6 +33,34 @@ TOP_KR_TICKERS = [
     "011070.KS", "011780.KS", "012450.KS", "014680.KS", "016360.KS", "017800.KS", "020150.KS", "021240.KS", "023530.KS", "029780.KS"
 ]
 
+# Predefined Top US ETF Tickers
+TOP_US_ETFS = [
+    # 시장 지수 추종
+    "SPY", "IVV", "VOO", "QQQ", "DIA", "IWM",
+    # 가치/배당/배당성장
+    "SCHD", "VYM", "SDY", "DVY", "DGRO", "VIG",
+    # 채권 (단기, 중기, 장기, 하이일드)
+    "TLT", "IEF", "SHY", "BND", "AGG", "LQD", "HYG",
+    # 대표 섹터 및 테마 (반도체, 기술, 바이오, 금융 등)
+    "SOXX", "SMH", "XLK", "XLV", "XLF", "XLY", "XLP", "XLE", "XLI", "XLB", "XLRE", "IBB", "XBI",
+    # 레버리지 및 인버스
+    "TQQQ", "SQQQ", "QLD", "SSO", "SDS", "SPXL", "SPXS", "SOXL", "SOXS"
+]
+
+# Predefined Top KR ETF Tickers
+TOP_KR_ETFS = [
+    # 국내 지수 추종 및 레버리지/인버스
+    "069500.KS", "102110.KS", "122630.KS", "252670.KS", "114800.KS", 
+    "229200.KS", "233740.KS", "251340.KS", "123320.KS", "252710.KS",
+    # 미국 및 해외 지수 추종
+    "360750.KS", "133690.KS", "381040.KS", "381170.KS", "458730.KS", 
+    "446770.KS", "379800.KS", "453810.KS", "143850.KS", "407830.KS",
+    # 국내외 섹터 및 테마 (2차전지, 반도체, 헬스케어, 차이나 등)
+    "305720.KS", "305540.KS", "396500.KS", "091230.KS", "227540.KS", 
+    "371460.KS", "423920.KS", "211900.KS", "210780.KS", "292150.KS", 
+    "266370.KS", "329200.KS", "390310.KS", "102040.KS"
+]
+
 def fetch_single_stock_metrics(ticker_symbol, name_override=None):
     """
     Fetches raw stock details from Yahoo Finance.
@@ -89,13 +117,31 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             if market_cap and revenue and revenue != 0:
                 psr = market_cap / revenue
 
-        market = "KR" if ticker_symbol.endswith((".KS", ".KQ")) else "US"
+        # Check if it is an ETF
+        is_etf_us = ticker_symbol in TOP_US_ETFS
+        is_etf_kr = ticker_symbol in TOP_KR_ETFS
+        if not (is_etf_us or is_etf_kr) and info.get("quoteType") == "ETF":
+            if ticker_symbol.endswith((".KS", ".KQ")):
+                is_etf_kr = True
+            else:
+                is_etf_us = True
+            
+        if is_etf_us:
+            market = "ETF_US"
+        elif is_etf_kr:
+            market = "ETF_KR"
+        else:
+            market = "KR" if ticker_symbol.endswith((".KS", ".KQ")) else "US"
         
         # 5. Volume and Trading Value (거래량 및 거래대금)
         volume = info.get("volume") or info.get("regularMarketVolume") or info.get("averageVolume") or 0
         trading_value = price * volume if price and volume else 0.0
 
-        # 6. News Sentiment Analysis (호재 점수)
+        # 6. Moving Averages for ETFs
+        fifty_day_avg = info.get("fiftyDayAverage")
+        two_hundred_day_avg = info.get("twoHundredDayAverage")
+
+        # 7. News Sentiment Analysis (호재 점수)
         sentiment_score = 0.5 # Neutral fallback
         try:
             news = ticker.news
@@ -134,7 +180,9 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             "sentiment_score": float(sentiment_score),
             "buy_score": None, # calculated in rank step
             "recommendation": None,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fifty_day_avg": fifty_day_avg,
+            "two_hundred_day_avg": two_hundred_day_avg
         }
     except Exception as e:
         print(f"Error fetching metrics for {ticker_symbol}: {e}")
@@ -205,12 +253,113 @@ def update_sync_state(status, message, percent):
     sync_state["percent"] = percent
     print(f"[{percent}%] {message}")
 
+def calculate_etf_ranks(market):
+    """
+    Loads all cached ETFs for the specified market, computes relative rankings based on Momentum + Liquidity + Sentiment,
+    updates buy_score and recommendation, and writes back to DB.
+    """
+    stocks = db.get_all_cached_stocks(market)
+    if not stocks:
+        return
+    df = pd.DataFrame(stocks)
+    
+    # 1. Momentum Score: fifty_day_avg / two_hundred_day_avg
+    # If not available, use 1.0 (neutral)
+    def calc_momentum(row):
+        f50 = row.get("fifty_day_avg")
+        f200 = row.get("two_hundred_day_avg")
+        if f50 and f200 and f200 != 0:
+            return float(f50) / float(f200)
+        return 1.0
+        
+    df["momentum"] = df.apply(calc_momentum, axis=1)
+    
+    # Normalize Momentum: Higher is better
+    df_mom = df.copy().sort_values(by="momentum", ascending=True)
+    V = len(df_mom)
+    df_mom["momentum_score"] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    df = df.merge(df_mom[["ticker", "momentum_score"]], on="ticker", how="left")
+    
+    # 2. Volume/Liquidity Score: Higher is better
+    df_vol = df[df["volume"].notna() & (df["volume"] > 0)].copy()
+    if not df_vol.empty:
+        df_vol = df_vol.sort_values(by="volume", ascending=True)
+        V = len(df_vol)
+        df_vol["volume_score"] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_vol["volume_score"] = []
+    df = df.merge(df_vol[["ticker", "volume_score"]], on="ticker", how="left")
+    df["volume_score"] = df["volume_score"].fillna(0.0)
+    
+    # 3. News Sentiment Score: Higher is better
+    df_sent = df[df["sentiment_score"].notna()].copy()
+    if not df_sent.empty:
+        df_sent = df_sent.sort_values(by="sentiment_score", ascending=True)
+        V = len(df_sent)
+        df_sent["sentiment_score_rank"] = [(i / (V - 1) if V > 1 else 1.0) for i in range(V)]
+    else:
+        df_sent["sentiment_score_rank"] = []
+    df = df.merge(df_sent[["ticker", "sentiment_score_rank"]], on="ticker", how="left")
+    df["sentiment_score_rank"] = df["sentiment_score_rank"].fillna(0.5)
+    
+    # Calculate ETF Buy Score:
+    # Momentum: 50%
+    # Liquidity (Volume): 30%
+    # Sentiment: 20%
+    df["buy_score"] = (
+        0.50 * df["momentum_score"] +
+        0.30 * df["volume_score"] +
+        0.20 * df["sentiment_score_rank"]
+    )
+    
+    # Sort valid indices by score descending
+    sorted_df = df.sort_values(by="buy_score", ascending=False)
+    total_valid = len(sorted_df)
+    
+    for rank_idx, (_, row) in enumerate(sorted_df.iterrows()):
+        percentile = rank_idx / (total_valid - 1) if total_valid > 1 else 0.5
+        
+        # Map percentile rank to rating
+        if percentile <= 0.05:      # Top 5%
+            recommendation = "강력 매수"
+        elif percentile <= 0.25:    # Top 5% - 25% (Next 20%)
+            recommendation = "매수"
+        elif percentile <= 0.75:    # Top 25% - 75% (Middle 50%)
+            recommendation = "관망"
+        elif percentile <= 0.95:    # Top 75% - 95% (Next 20%)
+            recommendation = "매도"
+        else:                       # Bottom 5%
+            recommendation = "강력 매도"
+            
+        db.save_stock({
+            "ticker": row["ticker"],
+            "name": row["name"],
+            "market": row["market"],
+            "price": row["price"],
+            "per": None,
+            "pbr": None,
+            "psr": None,
+            "roe": None,
+            "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
+            "trading_value": float(row["trading_value"]) if not pd.isna(row["trading_value"]) else 0.0,
+            "sentiment_score": float(row["sentiment_score"]) if not pd.isna(row["sentiment_score"]) else 0.5,
+            "buy_score": float(row["buy_score"]),
+            "recommendation": recommendation,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fifty_day_avg": float(row["fifty_day_avg"]) if not pd.isna(row["fifty_day_avg"]) else None,
+            "two_hundred_day_avg": float(row["two_hundred_day_avg"]) if not pd.isna(row["two_hundred_day_avg"]) else None
+        })
+ 
 def calculate_market_ranks(market):
     """
     Loads all cached stocks for a market, computes relative rankings,
     trains a local XGBoost Factor Model, updates buy_score and recommendation,
     and writes back to DB.
     """
+    if market in ["ETF_US", "ETF_KR"]:
+        calculate_etf_ranks(market)
+        return
+
     stocks = db.get_all_cached_stocks(market)
     if not stocks:
         return
@@ -387,15 +536,15 @@ def calculate_market_ranks(market):
             percentile = score_percentile_map.get(idx, 0.5)
             
             # Map percentile rank to rating
-            if percentile <= 0.10:      # Top 10%
+            if percentile <= 0.05:      # Top 5%
                 recommendation = "강력 매수"
-            elif percentile <= 0.25:    # Top 10% - 25% (Next 15%)
+            elif percentile <= 0.25:    # Top 5% - 25% (Next 20%)
                 recommendation = "매수"
             elif percentile <= 0.75:    # Top 25% - 75% (Middle 50%)
                 recommendation = "관망"
-            elif percentile <= 0.90:    # Top 75% - 90% (Next 15%)
+            elif percentile <= 0.95:    # Top 75% - 95% (Next 20%)
                 recommendation = "매도"
-            else:                       # Bottom 10%
+            else:                       # Bottom 5%
                 recommendation = "강력 매도"
                 
         db.save_stock({
@@ -468,14 +617,46 @@ def run_sync_all():
         fetch_and_update_stock(ticker, name)
         with progress_lock:
             progress_counter += 1
-            pct = 50 + int(35 * progress_counter / total_kr) # goes from 50% to 85%
+            pct = 50 + int(25 * progress_counter / total_kr) # goes from 50% to 75%
             update_sync_state("running", f"한국 대표 주식 재무 정보 수집 중 ({progress_counter}/{total_kr})...", pct)
             
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(fetch_kr_task, t, n) for t, n in kr_tickers_with_names]
         concurrent.futures.wait(futures)
         
-    update_sync_state("running", "한국 주식 지표 수집 완료. XGBoost + 팩터 가치 평가 모델 빌드 중...", 88)
+    update_sync_state("running", "한국 주식 지표 수집 완료. XGBoost + 팩터 가치 평가 모델 빌드 중...", 77)
     calculate_market_ranks("KR")
+
+    # 4. Fetch ETFs
+    update_sync_state("running", "한국 및 미국 대표 ETF 데이터 수집 시작...", 80)
+    all_etf_tickers = TOP_US_ETFS + TOP_KR_ETFS
+    total_etfs = len(all_etf_tickers)
+    etfs_with_names = []
+    for ticker in all_etf_tickers:
+        name_override = None
+        if ticker.endswith((".KS", ".KQ")):
+            clean_code = ticker.split('.')[0]
+            mapped = db.search_krx_ticker(clean_code)
+            name_override = mapped[1] if mapped else None
+        etfs_with_names.append((ticker, name_override))
+        
+    with progress_lock:
+        progress_counter = 0
+        
+    def fetch_etf_task(ticker, name):
+        global progress_counter
+        fetch_and_update_stock(ticker, name)
+        with progress_lock:
+            progress_counter += 1
+            pct = 80 + int(15 * progress_counter / total_etfs) # goes from 80% to 95%
+            update_sync_state("running", f"ETF 정보 수집 및 분석 중 ({progress_counter}/{total_etfs})...", pct)
+            
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_etf_task, t, n) for t, n in etfs_with_names]
+        concurrent.futures.wait(futures)
+        
+    update_sync_state("running", "ETF 지표 수집 완료. ETF 모멘텀 평가 모델 빌드 중...", 97)
+    calculate_market_ranks("ETF_US")
+    calculate_market_ranks("ETF_KR")
     
-    update_sync_state("idle", "모든 미국 및 한국 주식 데이터 동기화와 XGBoost 팩터 평가가 성공적으로 완료되었습니다!", 100)
+    update_sync_state("idle", "모든 미국, 한국 주식 및 ETF 데이터 동기화와 가치 분석 평가가 성공적으로 완료되었습니다!", 100)

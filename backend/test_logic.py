@@ -170,5 +170,49 @@ class TestStockRecommendationLogic(unittest.TestCase):
         
         print("Relative ranking calculation math test passed.")
 
+    def test_05_etf_fetch_and_ranking(self):
+        print("\n[Test 5] Testing ETF fetch and custom ranking...")
+        # Fetch SPY ETF
+        etf_metrics = scanner.fetch_single_stock_metrics("SPY")
+        self.assertIsNotNone(etf_metrics)
+        self.assertEqual(etf_metrics["market"], "ETF_US")
+        self.assertGreater(etf_metrics["fifty_day_avg"], 0)
+        self.assertGreater(etf_metrics["two_hundred_day_avg"], 0)
+        
+        # Save a few mock ETFs to test ranking
+        etf_a = {
+            "ticker": "ETF_A.TEST", "name": "ETF A", "market": "ETF_US", "price": 100.0,
+            "volume": 100000, "trading_value": 10000000.0, "sentiment_score": 0.8,
+            "fifty_day_avg": 110.0, "two_hundred_day_avg": 100.0, # Momentum = 1.10 (Best)
+            "buy_score": None, "recommendation": None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        etf_b = {
+            "ticker": "ETF_B.TEST", "name": "ETF B", "market": "ETF_US", "price": 100.0,
+            "volume": 1000, "trading_value": 100000.0, "sentiment_score": 0.2,
+            "fifty_day_avg": 90.0, "two_hundred_day_avg": 100.0, # Momentum = 0.90 (Worst)
+            "buy_score": None, "recommendation": None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        db.save_stock(etf_a)
+        db.save_stock(etf_b)
+        
+        scanner.calculate_market_ranks("ETF_US")
+        
+        a_scored = db.get_stock("ETF_A.TEST")
+        b_scored = db.get_stock("ETF_B.TEST")
+        
+        # Clean up test database pollution for test ETFs
+        conn = db.get_db_connection()
+        conn.execute("DELETE FROM stocks WHERE ticker = 'ETF_A.TEST' OR ticker = 'ETF_B.TEST'")
+        conn.commit()
+        conn.close()
+        
+        self.assertIsNotNone(a_scored)
+        self.assertIsNotNone(b_scored)
+        self.assertGreater(a_scored["buy_score"], b_scored["buy_score"])
+        print("ETF fetch and ranking test passed.")
+
 if __name__ == "__main__":
     unittest.main()
