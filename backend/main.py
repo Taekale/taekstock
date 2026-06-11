@@ -97,8 +97,8 @@ def realtime_top_active_sync_thread():
         except Exception as e:
             print(f"Error in realtime micro-sync thread: {e}")
             
-        # Run every 15 seconds
-        time.sleep(15)
+        # Run every 60 seconds (optimized from 15 seconds to reduce server load)
+        time.sleep(60)
 
 app = FastAPI(title="Smart Stock Recommendation API")
 

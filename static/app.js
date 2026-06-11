@@ -58,6 +58,7 @@ const elements = {
     krCacheCount: document.getElementById('kr-cache-count'),
     etfUsCacheCount: document.getElementById('etf-us-cache-count'),
     etfKrCacheCount: document.getElementById('etf-kr-cache-count'),
+    btnRefresh: document.getElementById('btn-refresh'),
     btnSyncData: document.getElementById('btn-sync-data'),
     searchInput: document.getElementById('search-input'),
     btnSearch: document.getElementById('btn-search'),
@@ -294,7 +295,7 @@ function renderList(stocks, container, isBuy) {
     container.innerHTML = '';
     
     if (!stocks || stocks.length === 0) {
-        container.innerHTML = `<div class="empty-state">해당 시장에 저장된 평가 종목 데이터가 없습니다. 먼저 '업데이트' 버튼을 누르거나 검색해주세요.</div>`;
+        container.innerHTML = `<div class="empty-state">해당 시장에 저장된 평가 종목 데이터가 없습니다. 우측 상단의 '실시간 전체 동기화' 버튼을 누르거나 검색해주세요.</div>`;
         return;
     }
     
@@ -992,6 +993,23 @@ function setupEventListeners() {
         }
     });
     
+    // Refresh Action
+    if (elements.btnRefresh) {
+        elements.btnRefresh.addEventListener('click', async () => {
+            const refreshIcon = elements.btnRefresh.querySelector('.sync-icon');
+            if (refreshIcon) refreshIcon.classList.add('loading');
+            try {
+                await fetchDbStatus();
+                await loadTop30();
+                showToast('대시보드 데이터를 새로고침했습니다.', 'success');
+            } catch (err) {
+                showToast('대시보드 새로고침 실패: ' + err.message, 'error');
+            } finally {
+                if (refreshIcon) refreshIcon.classList.remove('loading');
+            }
+        });
+    }
+
     // Sync Action
     if (elements.btnSyncData) {
         elements.btnSyncData.addEventListener('click', triggerSync);
@@ -1015,26 +1033,6 @@ async function init() {
     setupEventListeners();
     await fetchDbStatus();
     await loadTop30();
-    
-    // If DB is empty, automatically trigger sync on startup
-    const usCount = parseInt(elements.usCacheCount.textContent) || 0;
-    const krCount = parseInt(elements.krCacheCount.textContent) || 0;
-    const etfUsCount = elements.etfUsCacheCount ? (parseInt(elements.etfUsCacheCount.textContent) || 0) : 0;
-    const etfKrCount = elements.etfKrCacheCount ? (parseInt(elements.etfKrCacheCount.textContent) || 0) : 0;
-    
-    if (usCount === 0 || krCount === 0 || etfUsCount === 0 || etfKrCount === 0) {
-        showToast("데이터베이스 캐시가 비어 있거나 누락된 데이터가 있습니다. 최신 주식 평가 모델 동기화를 시작합니다!", "info");
-        triggerSync();
-    }
-    
-    // Set 5-second periodic auto-refresh for top 30 rankings
-    setInterval(async () => {
-        if (!state.isSyncing) {
-            console.log("자동 실시간 갱신 실행 중...");
-            await fetchDbStatus();
-            await loadTop30();
-        }
-    }, 5000);
 }
 
 document.addEventListener('DOMContentLoaded', init);
