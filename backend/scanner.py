@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 import concurrent.futures
 from . import db
+from .kis import kis_client
 
 # Predefined Top 100 US Stock Tickers (S&P 100 / Nasdaq Mega Caps)
 TOP_US_TICKERS = [
@@ -63,29 +64,45 @@ TOP_KR_ETFS = [
 
 def fetch_single_stock_metrics(ticker_symbol, name_override=None):
     """
-    Fetches raw stock details from Yahoo Finance.
-    Handles fallbacks for international tickers.
+    Fetches raw stock details from Korea Investment Securities (KIS) or Yahoo Finance.
+    Handles fallbacks dynamically if API key is not provided.
     """
     try:
+        # 0. Check KIS API first for Korean stocks
+        kis_data = None
+        is_korean = ticker_symbol.endswith((".KS", ".KQ"))
+        if is_korean and kis_client.is_available():
+            kis_data = kis_client.fetch_domestic_stock_metrics(ticker_symbol)
+            
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         if not info or "currentPrice" not in info and "regularMarketPrice" not in info and "previousClose" not in info:
-            # Maybe invalid ticker or API failed
-            return None
+            if not kis_data:
+                # Maybe invalid ticker or API failed
+                return None
+            info = {} # Empty fallback
             
         name = name_override or info.get("longName") or info.get("shortName") or ticker_symbol
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+        
+        # Price
+        if kis_data and kis_data.get("price"):
+            price = kis_data["price"]
+        else:
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
         
         # 1. PER (Price-to-Earnings Ratio) with Fallbacks
-        per = info.get("trailingPE")
-        if per is None:
-            per = info.get("forwardPE")
-        if per is None:
-            per = info.get("priceEpsCurrentYear")
-        if per is None:
-            eps = info.get("epsCurrentYear")
-            if eps and price and eps != 0:
-                per = price / eps
+        if kis_data and kis_data.get("per") is not None:
+            per = kis_data["per"]
+        else:
+            per = info.get("trailingPE")
+            if per is None:
+                per = info.get("forwardPE")
+            if per is None:
+                per = info.get("priceEpsCurrentYear")
+            if per is None:
+                eps = info.get("epsCurrentYear")
+                if eps and price and eps != 0:
+                    per = price / eps
 
         # 2. ROE (Return on Equity)
         roe = info.get("returnOnEquity")
@@ -94,20 +111,23 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             roe = roe * 100.0
 
         # 3. PBR (Price-to-Book Ratio) with Fallbacks
-        pbr = info.get("priceToBook")
-        if pbr is None:
-            # Calculate from: Equity = Net Income / ROE (as decimal)
-            shares = info.get("sharesOutstanding")
-            net_income = info.get("netIncomeToCommon")
-            # Convert ROE back to decimal for calculation if needed
-            roe_dec = (roe / 100.0) if roe else None
-            if roe_dec and net_income and shares and price and roe_dec != 0 and shares != 0:
-                try:
-                    equity = net_income / roe_dec
-                    book_value_per_share = equity / shares
-                    pbr = price / book_value_per_share
-                except ZeroDivisionError:
-                    pbr = None
+        if kis_data and kis_data.get("pbr") is not None:
+            pbr = kis_data["pbr"]
+        else:
+            pbr = info.get("priceToBook")
+            if pbr is None:
+                # Calculate from: Equity = Net Income / ROE (as decimal)
+                shares = info.get("sharesOutstanding")
+                net_income = info.get("netIncomeToCommon")
+                # Convert ROE back to decimal for calculation if needed
+                roe_dec = (roe / 100.0) if roe else None
+                if roe_dec and net_income and shares and price and roe_dec != 0 and shares != 0:
+                    try:
+                        equity = net_income / roe_dec
+                        book_value_per_share = equity / shares
+                        pbr = price / book_value_per_share
+                    except ZeroDivisionError:
+                        pbr = None
 
         # 4. PSR (Price-to-Sales Ratio) with Fallbacks
         psr = info.get("priceToSalesTrailing12Months")
@@ -134,8 +154,12 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             market = "KR" if ticker_symbol.endswith((".KS", ".KQ")) else "US"
         
         # 5. Volume and Trading Value (거래량 및 거래대금)
-        volume = info.get("volume") or info.get("regularMarketVolume") or info.get("averageVolume") or 0
-        trading_value = price * volume if price and volume else 0.0
+        if kis_data:
+            volume = kis_data.get("volume", 0)
+            trading_value = kis_data.get("trading_value", 0.0)
+        else:
+            volume = info.get("volume") or info.get("regularMarketVolume") or info.get("averageVolume") or 0
+            trading_value = price * volume if price and volume else 0.0
 
         # 6. Moving Averages for ETFs
         fifty_day_avg = info.get("fiftyDayAverage")
@@ -182,7 +206,9 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             "recommendation": None,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "fifty_day_avg": fifty_day_avg,
-            "two_hundred_day_avg": two_hundred_day_avg
+            "two_hundred_day_avg": two_hundred_day_avg,
+            "volume_power": kis_data.get("volume_power") if kis_data else None,
+            "bid_ask_ratio": kis_data.get("bid_ask_ratio") if kis_data else None
         }
     except Exception as e:
         print(f"Error fetching metrics for {ticker_symbol}: {e}")
@@ -311,6 +337,28 @@ def calculate_etf_ranks(market):
         0.30 * df["volume_score"] +
         0.20 * df["sentiment_score_rank"]
     )
+    
+    # Apply KIS supply/demand bonus to enhance KIS predictive accuracy for Korean ETFs
+    if market == "ETF_KR" and 'volume_power' in df.columns:
+        def apply_etf_kis_bonus(row):
+            score = row['buy_score']
+            if pd.isna(score) or score is None:
+                return 0.5
+            bonus = 0.0
+            vp = row.get('volume_power')
+            if vp is not None and not pd.isna(vp):
+                if vp >= 120.0:
+                    bonus += 0.05
+                elif vp >= 100.0:
+                    bonus += 0.02
+            bar = row.get('bid_ask_ratio')
+            if bar is not None and not pd.isna(bar):
+                if bar >= 1.5:
+                    bonus += 0.03
+                elif bar >= 1.2:
+                    bonus += 0.015
+            return min(1.0, score + bonus)
+        df['buy_score'] = df.apply(apply_etf_kis_bonus, axis=1)
     
     # Sort valid indices by score descending
     sorted_df = df.sort_values(by="buy_score", ascending=False)
@@ -504,6 +552,28 @@ def calculate_market_ranks(market):
     except Exception as e:
         print(f"XGBoost training failed, falling back to standard scoring: {e}")
         df['xgb_buy_score'] = (df['per_score'] + df['pbr_score'] + df['psr_score'] + df['roe_score']) / 4.0
+
+    # Apply KIS supply/demand bonus to enhance KIS predictive accuracy
+    if 'volume_power' in df.columns:
+        def apply_kis_bonus(row):
+            score = row['xgb_buy_score']
+            if pd.isna(score) or score is None:
+                return 0.5
+            bonus = 0.0
+            vp = row.get('volume_power')
+            if vp is not None and not pd.isna(vp):
+                if vp >= 120.0:
+                    bonus += 0.05
+                elif vp >= 100.0:
+                    bonus += 0.02
+            bar = row.get('bid_ask_ratio')
+            if bar is not None and not pd.isna(bar):
+                if bar >= 1.5:
+                    bonus += 0.03
+                elif bar >= 1.2:
+                    bonus += 0.015
+            return min(1.0, score + bonus)
+        df['xgb_buy_score'] = df.apply(apply_kis_bonus, axis=1)
     
     # Save scores and recommendations back to DB
     # Identify valid stocks and map their predicted buy_scores to relative percentiles

@@ -19,7 +19,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS stocks (
             ticker TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            market TEXT NOT NULL, -- 'US', 'KR' or 'ETF'
+            market TEXT NOT NULL,
             price REAL,
             per REAL,
             pbr REAL,
@@ -32,7 +32,9 @@ def init_db():
             recommendation TEXT,
             updated_at TEXT,
             fifty_day_avg REAL,
-            two_hundred_day_avg REAL
+            two_hundred_day_avg REAL,
+            volume_power REAL,
+            bid_ask_ratio REAL
         )
     """)
     
@@ -42,7 +44,9 @@ def init_db():
         ("trading_value", "REAL"), 
         ("sentiment_score", "REAL"),
         ("fifty_day_avg", "REAL"),
-        ("two_hundred_day_avg", "REAL")
+        ("two_hundred_day_avg", "REAL"),
+        ("volume_power", "REAL"),
+        ("bid_ask_ratio", "REAL")
     ]:
         try:
             cursor.execute(f"ALTER TABLE stocks ADD COLUMN {column} {col_type}")
@@ -264,20 +268,20 @@ def search_krx_ticker(query):
 
 def save_stock(stock_data):
     """
-    stock_data: dict with ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, two_hundred_day_avg
+    stock_data: dict with ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, two_hundred_day_avg, volume_power, bid_ask_ratio
     """
     conn = get_db_connection()
     cursor = conn.cursor()
     
     # Ensure all required keys exist in the dict to prevent sqlite3.ProgrammingError
-    required_keys = ["per", "pbr", "psr", "roe", "volume", "trading_value", "sentiment_score", "buy_score", "recommendation", "fifty_day_avg", "two_hundred_day_avg"]
+    required_keys = ["per", "pbr", "psr", "roe", "volume", "trading_value", "sentiment_score", "buy_score", "recommendation", "fifty_day_avg", "two_hundred_day_avg", "volume_power", "bid_ask_ratio"]
     for k in required_keys:
         if k not in stock_data:
             stock_data[k] = None
 
     cursor.execute("""
-        INSERT OR REPLACE INTO stocks (ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, two_hundred_day_avg)
-        VALUES (:ticker, :name, :market, :price, :per, :pbr, :psr, :roe, :volume, :trading_value, :sentiment_score, :buy_score, :recommendation, :updated_at, :fifty_day_avg, :two_hundred_day_avg)
+        INSERT OR REPLACE INTO stocks (ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, two_hundred_day_avg, volume_power, bid_ask_ratio)
+        VALUES (:ticker, :name, :market, :price, :per, :pbr, :psr, :roe, :volume, :trading_value, :sentiment_score, :buy_score, :recommendation, :updated_at, :fifty_day_avg, :two_hundred_day_avg, :volume_power, :bid_ask_ratio)
     """, stock_data)
     conn.commit()
     conn.close()

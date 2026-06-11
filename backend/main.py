@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,16 +42,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Route to serve the main frontend page
 @app.get("/")
-def read_root():
-    try:
-        db.increment_visitor_count()
-    except Exception as e:
-        print(f"Error incrementing visitor count: {e}")
+def read_root(visited: str = Cookie(None)):
     index_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        response = FileResponse(index_path)
+        if not visited:
+            try:
+                db.increment_visitor_count()
+                # Set cookie to expire at midnight tonight
+                now = datetime.now()
+                seconds_until_midnight = ((24 - now.hour - 1) * 3600) + ((60 - now.minute - 1) * 60) + (60 - now.second)
+                response.set_cookie(key="visited", value="1", max_age=max(1, seconds_until_midnight), httponly=True, path="/")
+            except Exception as e:
+                print(f"Error incrementing visitor count: {e}")
+        return response
     return {"message": "Welcome to Smart Stock Recommendation API. Static frontend files not found yet."}
 
 # Get Top 10 Buy and Top 10 Sell Stocks
