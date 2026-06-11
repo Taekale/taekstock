@@ -290,7 +290,7 @@ body {
 }
 
 .search-box-container {
-    max-width: 800px;
+    max-width: 1000px;
     margin: 0 auto;
     text-align: center;
     display: flex;
@@ -1048,14 +1048,63 @@ body {
         left: 16px;
         right: 16px;
         justify-content: center;
+        align-items: center;
         font-size: 0.75rem;
-        padding: 6px 12px;
+        padding: 8px 12px;
+        flex-direction: column;
+        gap: 6px;
+    }
+    
+    .top-info-bar .visitor-divider {
+        display: none; /* 모바일 및 태블릿에서는 구분 기호 숨김 */
+    }
+    
+    .visitor-counter {
+        display: flex;
+        flex-direction: row;
+        gap: 16px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+    
+    .visitor-counter span {
+        white-space: nowrap; /* 라벨과 숫자가 중간에 꺾여 줄바꿈되지 않도록 강제 방어 */
     }
 }
 
 @media (max-width: 768px) {
     .app-container {
         padding-top: 80px; /* absolute 배치된 topbar 고려 */
+    }
+    
+    .search-box-container {
+        max-width: 100%;
+        padding: 0 4px;
+    }
+    
+    .search-box {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 12px;
+        gap: 10px;
+        border-radius: var(--radius-md);
+    }
+    
+    .search-box .search-icon {
+        display: none; /* 모바일 세로 배치 시 불필요한 돋보기 아이콘 숨김 */
+    }
+    
+    .search-box input {
+        width: 100%;
+        text-align: center; /* 입력 텍스트와 placeholder 중앙 정렬 */
+        font-size: 1.1rem;
+        padding: 8px 4px;
+    }
+    
+    .search-box button {
+        width: 100%;
+        padding: 12px;
+        font-size: 1.1rem;
     }
     
     .app-header {
