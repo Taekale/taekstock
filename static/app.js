@@ -100,7 +100,27 @@ const elements = {
     modalMetricTradingValue: document.getElementById('modal-metric-trading-value'),
     modalEvalTradingValue: document.getElementById('modal-eval-trading-value'),
     modalMetricSentiment: document.getElementById('modal-metric-sentiment'),
-    modalEvalSentiment: document.getElementById('modal-eval-sentiment')
+    modalEvalSentiment: document.getElementById('modal-eval-sentiment'),
+    
+    // Growth & Stability Elements
+    modalCardPeg: document.getElementById('modal-card-peg'),
+    modalMetricPeg: document.getElementById('modal-metric-peg'),
+    modalEvalPeg: document.getElementById('modal-eval-peg'),
+    modalCardRevenueGrowth: document.getElementById('modal-card-revenue-growth'),
+    modalMetricRevenueGrowth: document.getElementById('modal-metric-revenue-growth'),
+    modalEvalRevenueGrowth: document.getElementById('modal-eval-revenue-growth'),
+    modalCardEarningsGrowth: document.getElementById('modal-card-earnings-growth'),
+    modalMetricEarningsGrowth: document.getElementById('modal-metric-earnings-growth'),
+    modalEvalEarningsGrowth: document.getElementById('modal-eval-earnings-growth'),
+    modalCardDebtToEquity: document.getElementById('modal-card-debt-to-equity'),
+    modalMetricDebtToEquity: document.getElementById('modal-metric-debt-to-equity'),
+    modalEvalDebtToEquity: document.getElementById('modal-eval-debt-to-equity'),
+    modalCardFreeCashFlow: document.getElementById('modal-card-free-cash-flow'),
+    modalMetricFreeCashFlow: document.getElementById('modal-metric-free-cash-flow'),
+    modalEvalFreeCashFlow: document.getElementById('modal-eval-free-cash-flow'),
+    modalCardEps: document.getElementById('modal-card-eps'),
+    modalMetricEps: document.getElementById('modal-metric-eps'),
+    modalEvalEps: document.getElementById('modal-eval-eps')
 };
 
 // --- Helper Functions ---
@@ -134,6 +154,21 @@ function formatTradingValue(val, market) {
         const eok = val / 100000000;
         return `${eok.toFixed(1)}억 원`;
     }
+}
+
+function formatFCF(val, market) {
+    if (val === null || val === undefined || isNaN(val)) return '-';
+    const isNegative = val < 0;
+    const absVal = Math.abs(val);
+    let result = '';
+    if (market === 'US' || market === 'ETF_US' || market === 'ETF') {
+        const millions = absVal / 1000000;
+        result = `$${millions.toFixed(1)}M`;
+    } else {
+        const eok = absVal / 100000000;
+        result = `${eok.toFixed(1)}억 원`;
+    }
+    return isNegative ? `-${result}` : result;
 }
 
 function formatSentiment(val) {
@@ -229,12 +264,12 @@ async function fetchDbStatus() {
     }
 }
 
-// Fetch and render Top 10 recommendations
-async function loadTop10() {
+// Fetch and render Top 30 recommendations
+async function loadTop30() {
     setDashboardLoading(true);
     try {
-        const res = await fetch(`/api/top10?market=${state.currentMarket}`);
-        if (!res.ok) throw new Error('Top 10 데이터를 가져오는데 실패했습니다.');
+        const res = await fetch(`/api/top30?market=${state.currentMarket}`);
+        if (!res.ok) throw new Error('Top 30 데이터를 가져오는데 실패했습니다.');
         
         const data = await res.json();
         renderList(data.buys, elements.buyListContainer, true);
@@ -409,6 +444,14 @@ function openStockModal(stock) {
         // 4. Hide ROE card to form a clean 3x2 grid
         roeCard.style.display = 'none';
         
+        // Hide growth metrics cards for ETFs
+        elements.modalCardPeg.style.display = 'none';
+        elements.modalCardRevenueGrowth.style.display = 'none';
+        elements.modalCardEarningsGrowth.style.display = 'none';
+        elements.modalCardDebtToEquity.style.display = 'none';
+        elements.modalCardFreeCashFlow.style.display = 'none';
+        elements.modalCardEps.style.display = 'none';
+        
         // Generate ETF custom AI analysis explanation
         generateEtfExplanation(stock);
     } else {
@@ -417,6 +460,14 @@ function openStockModal(stock) {
         pbrTitle.innerHTML = 'PBR <small>(주가순자산비율)</small>';
         psrTitle.innerHTML = 'PSR <small>(주가매출비율)</small>';
         roeCard.style.display = 'flex';
+        
+        // Show growth metrics cards for stocks
+        elements.modalCardPeg.style.display = 'flex';
+        elements.modalCardRevenueGrowth.style.display = 'flex';
+        elements.modalCardEarningsGrowth.style.display = 'flex';
+        elements.modalCardDebtToEquity.style.display = 'flex';
+        elements.modalCardFreeCashFlow.style.display = 'flex';
+        elements.modalCardEps.style.display = 'flex';
         
         // Render standard metrics
         elements.modalMetricPer.textContent = formatMetric(stock.per);
@@ -555,6 +606,123 @@ function evaluateMetrics(stock) {
     } else {
         evalSentiment.textContent = '중립적인 분위기';
         evalSentiment.classList.add('text-neutral');
+    }
+    
+    // 8. PEG evaluation
+    const peg = stock.peg_ratio;
+    const evalPeg = elements.modalEvalPeg;
+    evalPeg.className = 'metric-evaluation';
+    elements.modalMetricPeg.textContent = formatMetric(peg);
+    if (peg === null || peg === undefined || isNaN(peg)) {
+        evalPeg.textContent = '데이터 없음';
+        evalPeg.classList.add('text-neutral');
+    } else if (peg < 0) {
+        evalPeg.textContent = '성장률 음수 / 적자';
+        evalPeg.classList.add('text-bad');
+    } else if (peg < 1.0) {
+        evalPeg.textContent = '저평가 고성장주 (우량)';
+        evalPeg.classList.add('text-good');
+    } else if (peg >= 1.5) {
+        evalPeg.textContent = '고평가 경계';
+        evalPeg.classList.add('text-bad');
+    } else {
+        evalPeg.textContent = '적정 수준';
+        evalPeg.classList.add('text-neutral');
+    }
+    
+    // 9. Revenue Growth evaluation
+    const revG = stock.revenue_growth;
+    const evalRevG = elements.modalEvalRevenueGrowth;
+    evalRevG.className = 'metric-evaluation';
+    elements.modalMetricRevenueGrowth.textContent = formatMetric(revG !== null ? revG * 100 : null, '%');
+    if (revG === null || revG === undefined || isNaN(revG)) {
+        evalRevG.textContent = '데이터 없음';
+        evalRevG.classList.add('text-neutral');
+    } else if (revG > 0.20) {
+        evalRevG.textContent = '초고속 성장 (20% 초과)';
+        evalRevG.classList.add('text-good');
+    } else if (revG > 0.10) {
+        evalRevG.textContent = '견조한 성장 (10% 초과)';
+        evalRevG.classList.add('text-good');
+    } else if (revG < 0) {
+        evalRevG.textContent = '역성장 경계 필요';
+        evalRevG.classList.add('text-bad');
+    } else {
+        evalRevG.textContent = '보통 수준의 성장';
+        evalRevG.classList.add('text-neutral');
+    }
+    
+    // 10. Earnings Growth evaluation
+    const earnG = stock.earnings_growth;
+    const evalEarnG = elements.modalEvalEarningsGrowth;
+    evalEarnG.className = 'metric-evaluation';
+    elements.modalMetricEarningsGrowth.textContent = formatMetric(earnG !== null ? earnG * 100 : null, '%');
+    if (earnG === null || earnG === undefined || isNaN(earnG)) {
+        evalEarnG.textContent = '데이터 없음';
+        evalEarnG.classList.add('text-neutral');
+    } else if (earnG > 0.25) {
+        evalEarnG.textContent = '폭발적인 이익 성장 (25% 초과)';
+        evalEarnG.classList.add('text-good');
+    } else if (earnG > 0.10) {
+        evalEarnG.textContent = '안정적 성장 (10% 초과)';
+        evalEarnG.classList.add('text-good');
+    } else if (earnG < 0) {
+        evalEarnG.textContent = '이익 역성장 경계 필요';
+        evalEarnG.classList.add('text-bad');
+    } else {
+        evalEarnG.textContent = '보통 수준의 성장';
+        evalEarnG.classList.add('text-neutral');
+    }
+    
+    // 11. Debt to Equity evaluation
+    const debt = stock.debt_to_equity;
+    const evalDebt = elements.modalEvalDebtToEquity;
+    evalDebt.className = 'metric-evaluation';
+    elements.modalMetricDebtToEquity.textContent = formatMetric(debt, '%');
+    if (debt === null || debt === undefined || isNaN(debt)) {
+        evalDebt.textContent = '데이터 없음';
+        evalDebt.classList.add('text-neutral');
+    } else if (debt < 100.0) {
+        evalDebt.textContent = '재무 매우 건전 (100% 미만)';
+        evalDebt.classList.add('text-good');
+    } else if (debt > 200.0) {
+        evalDebt.textContent = '부채 과다 경계 (200% 초과)';
+        evalDebt.classList.add('text-bad');
+    } else {
+        evalDebt.textContent = '적정 수준';
+        evalDebt.classList.add('text-neutral');
+    }
+    
+    // 12. Free Cash Flow evaluation
+    const fcf = stock.free_cash_flow;
+    const evalFCF = elements.modalEvalFreeCashFlow;
+    evalFCF.className = 'metric-evaluation';
+    elements.modalMetricFreeCashFlow.textContent = formatFCF(fcf, stock.market);
+    if (fcf === null || fcf === undefined || isNaN(fcf)) {
+        evalFCF.textContent = '데이터 없음';
+        evalFCF.classList.add('text-neutral');
+    } else if (fcf > 0) {
+        evalFCF.textContent = '현금 흐름 건전 (흑자)';
+        evalFCF.classList.add('text-good');
+    } else {
+        evalFCF.textContent = '현금 흐름 잠식 경계 (적자)';
+        evalFCF.classList.add('text-bad');
+    }
+    
+    // 13. EPS evaluation
+    const eps = stock.eps;
+    const evalEps = elements.modalEvalEps;
+    evalEps.className = 'metric-evaluation';
+    elements.modalMetricEps.textContent = formatPrice(eps, stock.market, stock.ticker);
+    if (eps === null || eps === undefined || isNaN(eps)) {
+        evalEps.textContent = '데이터 없음';
+        evalEps.classList.add('text-neutral');
+    } else if (eps > 0) {
+        evalEps.textContent = '주당순이익 흑자';
+        evalEps.classList.add('text-good');
+    } else {
+        evalEps.textContent = '주당순이익 적자 경계';
+        evalEps.classList.add('text-bad');
     }
     
     // AI investment explanation writeup
@@ -706,7 +874,7 @@ async function executeSearch() {
         
         // Reload dashboard lists and stats (since dynamic search might add new ranking member)
         await fetchDbStatus();
-        await loadTop10();
+        await loadTop30();
         
         showToast(`'${stock.name}' (${stock.ticker}) 검색 완료!`, 'success');
     } catch (err) {
@@ -758,9 +926,9 @@ async function triggerSync() {
                 if (progressData.status === 'idle' && pct >= 100) {
                     clearInterval(interval);
                     
-                    // Reload top 10 lists and DB cache count
+                    // Reload top 30 lists and DB cache count
                     await fetchDbStatus();
-                    await loadTop10();
+                    await loadTop30();
                     
                     // Dismiss modal after a short delay for user satisfaction
                     setTimeout(() => {
@@ -811,7 +979,7 @@ function setupEventListeners() {
             if (state.currentMarket !== market) {
                 state.currentMarket = market;
                 updateTabActiveState();
-                loadTop10();
+                loadTop30();
             }
         });
     });
@@ -846,7 +1014,7 @@ function setupEventListeners() {
 async function init() {
     setupEventListeners();
     await fetchDbStatus();
-    await loadTop10();
+    await loadTop30();
     
     // If DB is empty, automatically trigger sync on startup
     const usCount = parseInt(elements.usCacheCount.textContent) || 0;
@@ -859,14 +1027,14 @@ async function init() {
         triggerSync();
     }
     
-    // Set 60-second periodic auto-refresh for top 10 rankings
+    // Set 5-second periodic auto-refresh for top 30 rankings
     setInterval(async () => {
         if (!state.isSyncing) {
             console.log("자동 실시간 갱신 실행 중...");
             await fetchDbStatus();
-            await loadTop10();
+            await loadTop30();
         }
-    }, 60000);
+    }, 5000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -34,7 +34,13 @@ def init_db():
             fifty_day_avg REAL,
             two_hundred_day_avg REAL,
             volume_power REAL,
-            bid_ask_ratio REAL
+            bid_ask_ratio REAL,
+            peg_ratio REAL,
+            revenue_growth REAL,
+            earnings_growth REAL,
+            debt_to_equity REAL,
+            free_cash_flow REAL,
+            eps REAL
         )
     """)
     
@@ -46,7 +52,13 @@ def init_db():
         ("fifty_day_avg", "REAL"),
         ("two_hundred_day_avg", "REAL"),
         ("volume_power", "REAL"),
-        ("bid_ask_ratio", "REAL")
+        ("bid_ask_ratio", "REAL"),
+        ("peg_ratio", "REAL"),
+        ("revenue_growth", "REAL"),
+        ("earnings_growth", "REAL"),
+        ("debt_to_equity", "REAL"),
+        ("free_cash_flow", "REAL"),
+        ("eps", "REAL")
     ]:
         try:
             cursor.execute(f"ALTER TABLE stocks ADD COLUMN {column} {col_type}")
@@ -274,14 +286,29 @@ def save_stock(stock_data):
     cursor = conn.cursor()
     
     # Ensure all required keys exist in the dict to prevent sqlite3.ProgrammingError
-    required_keys = ["per", "pbr", "psr", "roe", "volume", "trading_value", "sentiment_score", "buy_score", "recommendation", "fifty_day_avg", "two_hundred_day_avg", "volume_power", "bid_ask_ratio"]
+    required_keys = [
+        "per", "pbr", "psr", "roe", "volume", "trading_value", "sentiment_score", 
+        "buy_score", "recommendation", "fifty_day_avg", "two_hundred_day_avg", 
+        "volume_power", "bid_ask_ratio", "peg_ratio", "revenue_growth", 
+        "earnings_growth", "debt_to_equity", "free_cash_flow", "eps"
+    ]
     for k in required_keys:
         if k not in stock_data:
             stock_data[k] = None
 
     cursor.execute("""
-        INSERT OR REPLACE INTO stocks (ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, two_hundred_day_avg, volume_power, bid_ask_ratio)
-        VALUES (:ticker, :name, :market, :price, :per, :pbr, :psr, :roe, :volume, :trading_value, :sentiment_score, :buy_score, :recommendation, :updated_at, :fifty_day_avg, :two_hundred_day_avg, :volume_power, :bid_ask_ratio)
+        INSERT OR REPLACE INTO stocks (
+            ticker, name, market, price, per, pbr, psr, roe, volume, trading_value, 
+            sentiment_score, buy_score, recommendation, updated_at, fifty_day_avg, 
+            two_hundred_day_avg, volume_power, bid_ask_ratio, peg_ratio, 
+            revenue_growth, earnings_growth, debt_to_equity, free_cash_flow, eps
+        )
+        VALUES (
+            :ticker, :name, :market, :price, :per, :pbr, :psr, :roe, :volume, :trading_value, 
+            :sentiment_score, :buy_score, :recommendation, :updated_at, :fifty_day_avg, 
+            :two_hundred_day_avg, :volume_power, :bid_ask_ratio, :peg_ratio, 
+            :revenue_growth, :earnings_growth, :debt_to_equity, :free_cash_flow, :eps
+        )
     """, stock_data)
     conn.commit()
     conn.close()
@@ -307,9 +334,9 @@ def get_all_cached_stocks(market=None):
     conn.close()
     return [dict(r) for r in rows]
 
-def get_top10(market, order_by_buy=True):
+def get_top30(market, order_by_buy=True):
     """
-    Returns top 10 stocks based on buy_score.
+    Returns top 30 stocks based on buy_score.
     If order_by_buy is True, return highest scores (Buy) with recommendation IN ('강력 매수', '매수').
     If False, return lowest scores (Sell) with recommendation IN ('강력 매도', '매도').
     """
@@ -322,14 +349,14 @@ def get_top10(market, order_by_buy=True):
             SELECT * FROM stocks 
             WHERE market = ? AND buy_score IS NOT NULL AND recommendation IN ('강력 매수', '매수')
             ORDER BY buy_score {order}, ticker ASC
-            LIMIT 10
+            LIMIT 30
         """, (market,))
     else:
         cursor.execute(f"""
             SELECT * FROM stocks 
             WHERE market = ? AND buy_score IS NOT NULL AND recommendation IN ('강력 매도', '매도')
             ORDER BY buy_score {order}, ticker ASC
-            LIMIT 10
+            LIMIT 30
         """, (market,))
     rows = cursor.fetchall()
     conn.close()

@@ -53,10 +53,10 @@ class TestStockRecommendationLogic(unittest.TestCase):
         self.assertEqual(retrieved["buy_score"], 0.85)
         self.assertEqual(retrieved["recommendation"], "강력 매수")
         
-        # Test Top 10 retrieval
-        top10_buys = db.get_top10("US", order_by_buy=True)
-        self.assertTrue(len(top10_buys) > 0)
-        self.assertEqual(top10_buys[0]["ticker"], "TEST.US")
+        # Test Top 30 retrieval
+        top30_buys = db.get_top30("US", order_by_buy=True)
+        self.assertTrue(len(top30_buys) > 0)
+        self.assertEqual(top30_buys[0]["ticker"], "TEST.US")
         print("Database CRUD operations passed.")
 
     def test_02_krx_mapping_search(self):

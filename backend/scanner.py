@@ -3,8 +3,20 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import concurrent.futures
+import requests
+import time
 from . import db
 from .kis import kis_client
+
+# Global requests session with customized User-Agent to bypass Yahoo Finance scrap-blocks / Crumb issues
+yf_session = requests.Session()
+yf_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ko-KR;q=0.8,ko;q=0.7",
+    "Connection": "keep-alive"
+})
+
 
 # Predefined Top 100 US Stock Tickers (S&P 100 / Nasdaq Mega Caps)
 TOP_US_TICKERS = [
@@ -74,11 +86,40 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
         if is_korean and kis_client.is_available():
             kis_data = kis_client.fetch_domestic_stock_metrics(ticker_symbol)
             
-        ticker = yf.Ticker(ticker_symbol)
-        info = ticker.info
-        if not info or "currentPrice" not in info and "regularMarketPrice" not in info and "previousClose" not in info:
+        ticker = yf.Ticker(ticker_symbol, session=yf_session)
+        
+        # Parallel fetch for info and news to drastically reduce latency bottleneck
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_info = executor.submit(lambda: ticker.info)
+            future_news = executor.submit(lambda: ticker.news)
+            
+            try:
+                info = future_info.result(timeout=4.5)
+            except Exception as e:
+                print(f"yfinance info timeout/error for {ticker_symbol}: {e}")
+                info = {}
+                
+            try:
+                news = future_news.result(timeout=2.5)
+            except Exception as e:
+                print(f"yfinance news timeout/error for {ticker_symbol}: {e}")
+                news = []
+                
+        # Fast Info Fallback if full info is missing or failed
+        if not info or ("currentPrice" not in info and "regularMarketPrice" not in info and "previousClose" not in info):
+            try:
+                fast = ticker.fast_info
+                if fast:
+                    info["currentPrice"] = fast.get("lastPrice") or fast.get("last_price")
+                    info["volume"] = fast.get("lastVolume") or fast.get("last_volume") or fast.get("volume")
+                    info["fiftyDayAverage"] = fast.get("fiftyDayAverage") or fast.get("fifty_day_average")
+                    info["twoHundredDayAverage"] = fast.get("twoHundredDayAverage") or fast.get("two_hundred_day_average")
+            except Exception as e:
+                print(f"yfinance fast_info fallback failed for {ticker_symbol}: {e}")
+                
+        if not info or ("currentPrice" not in info and "regularMarketPrice" not in info and "previousClose" not in info):
             if not kis_data:
-                # Maybe invalid ticker or API failed
+                # Maybe invalid ticker or API failed completely
                 return None
             info = {} # Empty fallback
             
@@ -168,7 +209,6 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
         # 7. News Sentiment Analysis (호재 점수)
         sentiment_score = 0.5 # Neutral fallback
         try:
-            news = ticker.news
             if news:
                 pos_words = ["buy", "up", "growth", "profit", "surpass", "bullish", "upgrade", "beat", "positive", "high", "success", "gain", "raise", "increase", "jump", "호재", "상승", "성장", "흑자", "돌파", "매수", "개선"]
                 neg_words = ["sell", "down", "loss", "decline", "bearish", "downgrade", "miss", "negative", "low", "fail", "risk", "drop", "fall", "decrease", "cut", "악재", "하락", "손실", "적자", "우려", "매도", "부진"]
@@ -176,9 +216,14 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
                 pos_count = 0
                 neg_count = 0
                 for article in news:
-                    title = article.get("title", "").lower()
-                    has_pos = any(w in title for w in pos_words)
-                    has_neg = any(w in title for w in neg_words)
+                    if not article or not isinstance(article, dict):
+                        continue
+                    title = article.get("title")
+                    if not title or not isinstance(title, str):
+                        continue
+                    title_lower = title.lower()
+                    has_pos = any(w in title_lower for w in pos_words)
+                    has_neg = any(w in title_lower for w in neg_words)
                     if has_pos and not has_neg:
                         pos_count += 1
                     elif has_neg and not has_pos:
@@ -189,6 +234,14 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
                     sentiment_score = 0.5 + 0.5 * (pos_count - neg_count) / total_classified
         except Exception:
             pass
+            
+        # 8. Extra Growth & Fundamental Factors (PEG, Revenue/Earnings Growth, Debt, FCF, EPS)
+        peg_ratio = info.get("pegRatio")
+        revenue_growth = info.get("revenueGrowth")
+        earnings_growth = info.get("earningsGrowth")
+        debt_to_equity = info.get("debtToEquity")
+        free_cash_flow = info.get("freeCashflow")
+        eps = info.get("trailingEps") or info.get("forwardEps") or info.get("epsTrailingTwelveMonths")
             
         return {
             "ticker": ticker_symbol,
@@ -208,7 +261,13 @@ def fetch_single_stock_metrics(ticker_symbol, name_override=None):
             "fifty_day_avg": fifty_day_avg,
             "two_hundred_day_avg": two_hundred_day_avg,
             "volume_power": kis_data.get("volume_power") if kis_data else None,
-            "bid_ask_ratio": kis_data.get("bid_ask_ratio") if kis_data else None
+            "bid_ask_ratio": kis_data.get("bid_ask_ratio") if kis_data else None,
+            "peg_ratio": float(peg_ratio) if peg_ratio is not None else None,
+            "revenue_growth": float(revenue_growth) if revenue_growth is not None else None,
+            "earnings_growth": float(earnings_growth) if earnings_growth is not None else None,
+            "debt_to_equity": float(debt_to_equity) if debt_to_equity is not None else None,
+            "free_cash_flow": float(free_cash_flow) if free_cash_flow is not None else None,
+            "eps": float(eps) if eps is not None else None
         }
     except Exception as e:
         print(f"Error fetching metrics for {ticker_symbol}: {e}")
@@ -328,14 +387,16 @@ def calculate_etf_ranks(market):
     df = df.merge(df_sent[["ticker", "sentiment_score_rank"]], on="ticker", how="left")
     df["sentiment_score_rank"] = df["sentiment_score_rank"].fillna(0.5)
     
-    # Calculate ETF Buy Score:
-    # Momentum: 50%
-    # Liquidity (Volume): 30%
-    # Sentiment: 20%
+    # Store previous buy score for EMA smoothing
+    if "buy_score" in df.columns:
+        df["prev_buy_score"] = df["buy_score"]
+    else:
+        df["prev_buy_score"] = None
+
     df["buy_score"] = (
-        0.50 * df["momentum_score"] +
-        0.30 * df["volume_score"] +
-        0.20 * df["sentiment_score_rank"]
+        0.45 * df["momentum_score"] +
+        0.40 * df["volume_score"] +
+        0.15 * df["sentiment_score_rank"]
     )
     
     # Apply KIS supply/demand bonus to enhance KIS predictive accuracy for Korean ETFs
@@ -359,6 +420,16 @@ def calculate_etf_ranks(market):
                     bonus += 0.015
             return min(1.0, score + bonus)
         df['buy_score'] = df.apply(apply_etf_kis_bonus, axis=1)
+    
+    # Apply Exponential Moving Average (EMA) smoothing to prevent volatile ranking jumps
+    alpha = 0.4
+    def smooth_etf_score(row):
+        new_val = row['buy_score']
+        old_val = row.get('prev_buy_score')
+        if old_val is not None and not pd.isna(old_val):
+            return alpha * new_val + (1.0 - alpha) * old_val
+        return new_val
+    df['buy_score'] = df.apply(smooth_etf_score, axis=1)
     
     # Sort valid indices by score descending
     sorted_df = df.sort_values(by="buy_score", ascending=False)
@@ -394,8 +465,10 @@ def calculate_etf_ranks(market):
             "buy_score": float(row["buy_score"]),
             "recommendation": recommendation,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "fifty_day_avg": float(row["fifty_day_avg"]) if not pd.isna(row["fifty_day_avg"]) else None,
-            "two_hundred_day_avg": float(row["two_hundred_day_avg"]) if not pd.isna(row["two_hundred_day_avg"]) else None
+            "fifty_day_avg": float(row["fifty_day_avg"]) if 'fifty_day_avg' in row and not pd.isna(row["fifty_day_avg"]) else None,
+            "two_hundred_day_avg": float(row["two_hundred_day_avg"]) if 'two_hundred_day_avg' in row and not pd.isna(row["two_hundred_day_avg"]) else None,
+            "volume_power": float(row["volume_power"]) if 'volume_power' in row and not pd.isna(row["volume_power"]) else None,
+            "bid_ask_ratio": float(row["bid_ask_ratio"]) if 'bid_ask_ratio' in row and not pd.isna(row["bid_ask_ratio"]) else None,
         })
  
 def calculate_market_ranks(market):
@@ -495,18 +568,89 @@ def calculate_market_ranks(market):
         import xgboost as xgb
         import numpy as np
         
-        # Calculate Target Buy Score for each stock:
-        # Balanced multi-factor target score:
-        # Valuation (PER, PBR, PSR): 40% (13.3% each)
-        # Quality (ROE): 30%
-        # News Sentiment (호재): 20%
-        # Liquidity (Volume, Trading Value): 10% (5% each)
-        df['target_score'] = (
-            0.30 * df['roe_score'] +
-            0.20 * df['sentiment_score_rank'] +
-            0.133 * df['per_score'] + 0.133 * df['pbr_score'] + 0.134 * df['psr_score'] +
-            0.05 * df['volume_score'] + 0.05 * df['trading_value_score']
-        )
+        # Calculate Target Buy Score using the Advanced Growth & Liquidity Multi-Factor Model
+        def get_factor_target_score(row):
+            # 1. Base relative scores
+            roe_s = row.get("roe_score", 0.0)
+            sent_s = row.get("sentiment_score_rank", 0.5)
+            per_s = row.get("per_score", 0.0)
+            pbr_s = row.get("pbr_score", 0.0)
+            psr_s = row.get("psr_score", 0.0)
+            vol_s = row.get("volume_score", 0.0)
+            val_s = row.get("trading_value_score", 0.0)
+            
+            # 2. Overbought (Disparity) Penalty: 이미 단기 급등한 종목은 후순위 배치
+            price = row.get("price")
+            ma50 = row.get("fifty_day_avg")
+            overbought_penalty = 0.0
+            if price and ma50 and not pd.isna(ma50) and ma50 > 0:
+                ratio = price / ma50
+                if ratio >= 1.25:
+                    overbought_penalty = -0.15
+                elif ratio >= 1.15:
+                    overbought_penalty = -0.08
+                elif ratio >= 1.08:
+                    overbought_penalty = -0.03
+                    
+            # 3. Illiquidity Penalty: 거래대금 및 거래량이 극도로 적은 비인기 잡주 디스카운트
+            # 거래량 및 거래대금 상대 평가의 평균이 하위 25% 이하인 경우 -0.25 강력 감점
+            illiquidity_penalty = 0.0
+            if (vol_s + val_s) / 2.0 <= 0.25:
+                illiquidity_penalty = -0.25
+                
+            # 4. Growth & Value Bonus (매출 성장, EPS 성장, ROE, PEG, 부채비율, FCF)
+            growth_bonus = 0.0
+            rev_g = row.get("revenue_growth")
+            earn_g = row.get("earnings_growth")
+            roe_val = row.get("roe")
+            peg = row.get("peg_ratio")
+            debt = row.get("debt_to_equity")
+            fcf = row.get("free_cash_flow")
+            
+            is_growth_stock = False
+            # 매출 성장률 > 20%
+            if rev_g is not None and not pd.isna(rev_g) and rev_g > 0.20:
+                growth_bonus += 0.05
+                is_growth_stock = True
+            # EPS 성장률 > 25%
+            if earn_g is not None and not pd.isna(earn_g) and earn_g > 0.25:
+                growth_bonus += 0.05
+                is_growth_stock = True
+            # ROE > 15%
+            if roe_val is not None and not pd.isna(roe_val) and roe_val > 15.0:
+                growth_bonus += 0.05
+            # PEG < 1
+            if peg is not None and not pd.isna(peg) and 0.0 < peg < 1.0:
+                growth_bonus += 0.06
+                is_growth_stock = True
+            # 부채비율 낮음 (< 100%)
+            if debt is not None and not pd.isna(debt) and debt < 100.0:
+                growth_bonus += 0.03
+            # FCF 양수 (> 0)
+            if fcf is not None and not pd.isna(fcf) and fcf > 0:
+                growth_bonus += 0.03
+                
+            # 5. 고PER 완화 (성장률이 높고 PEG가 훌륭하면 고PER 감점 상쇄 보정)
+            per_offset = 0.0
+            if is_growth_stock and per_s < 0.5:
+                per_offset = 0.10
+                
+            # Calculate final target score
+            # Valuation (PER, PBR, PSR): 40% (각 13.3%)
+            # Quality (ROE): 25%
+            # Liquidity (Volume, Trading Value): 25% (각 12.5%) -> 실거래 대폭 반영
+            # News Sentiment: 10%
+            base_score = (
+                0.25 * roe_s +
+                0.10 * sent_s +
+                0.133 * (per_s + per_offset) + 0.133 * pbr_s + 0.134 * psr_s +
+                0.125 * vol_s + 0.125 * val_s
+            )
+            
+            final_score = base_score + overbought_penalty + illiquidity_penalty + growth_bonus
+            return min(1.0, max(0.0, final_score))
+
+        df['target_score'] = df.apply(get_factor_target_score, axis=1)
         
         if len(df) < 15:
             # Fallback for small datasets (e.g. testing) to avoid XGBoost predicting mean
@@ -551,7 +695,8 @@ def calculate_market_ranks(market):
         
     except Exception as e:
         print(f"XGBoost training failed, falling back to standard scoring: {e}")
-        df['xgb_buy_score'] = (df['per_score'] + df['pbr_score'] + df['psr_score'] + df['roe_score']) / 4.0
+        # Use the exact same get_factor_target_score logic for fallback consistency
+        df['xgb_buy_score'] = df['target_score']
 
     # Apply KIS supply/demand bonus to enhance KIS predictive accuracy
     if 'volume_power' in df.columns:
@@ -574,6 +719,16 @@ def calculate_market_ranks(market):
                     bonus += 0.015
             return min(1.0, score + bonus)
         df['xgb_buy_score'] = df.apply(apply_kis_bonus, axis=1)
+    
+    # Apply Exponential Moving Average (EMA) smoothing to prevent volatile ranking jumps
+    alpha = 0.4
+    def smooth_score(row):
+        new_val = row['xgb_buy_score']
+        old_val = row.get('buy_score')
+        if old_val is not None and not pd.isna(old_val):
+            return alpha * new_val + (1.0 - alpha) * old_val
+        return new_val
+    df['xgb_buy_score'] = df.apply(smooth_score, axis=1)
     
     # Save scores and recommendations back to DB
     # Identify valid stocks and map their predicted buy_scores to relative percentiles
@@ -622,16 +777,26 @@ def calculate_market_ranks(market):
             "name": row["name"],
             "market": row["market"],
             "price": row["price"],
-            "per": row["per"],
-            "pbr": row["pbr"],
-            "psr": row["psr"],
-            "roe": row["roe"],
+            "per": float(row["per"]) if not pd.isna(row["per"]) else None,
+            "pbr": float(row["pbr"]) if not pd.isna(row["pbr"]) else None,
+            "psr": float(row["psr"]) if not pd.isna(row["psr"]) else None,
+            "roe": float(row["roe"]) if not pd.isna(row["roe"]) else None,
             "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
             "trading_value": float(row["trading_value"]) if not pd.isna(row["trading_value"]) else 0.0,
             "sentiment_score": float(row["sentiment_score"]) if not pd.isna(row["sentiment_score"]) else 0.5,
             "buy_score": buy_score,
             "recommendation": recommendation,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fifty_day_avg": float(row["fifty_day_avg"]) if 'fifty_day_avg' in row and not pd.isna(row["fifty_day_avg"]) else None,
+            "two_hundred_day_avg": float(row["two_hundred_day_avg"]) if 'two_hundred_day_avg' in row and not pd.isna(row["two_hundred_day_avg"]) else None,
+            "volume_power": float(row["volume_power"]) if 'volume_power' in row and not pd.isna(row["volume_power"]) else None,
+            "bid_ask_ratio": float(row["bid_ask_ratio"]) if 'bid_ask_ratio' in row and not pd.isna(row["bid_ask_ratio"]) else None,
+            "peg_ratio": float(row["peg_ratio"]) if 'peg_ratio' in row and not pd.isna(row["peg_ratio"]) else None,
+            "revenue_growth": float(row["revenue_growth"]) if 'revenue_growth' in row and not pd.isna(row["revenue_growth"]) else None,
+            "earnings_growth": float(row["earnings_growth"]) if 'earnings_growth' in row and not pd.isna(row["earnings_growth"]) else None,
+            "debt_to_equity": float(row["debt_to_equity"]) if 'debt_to_equity' in row and not pd.isna(row["debt_to_equity"]) else None,
+            "free_cash_flow": float(row["free_cash_flow"]) if 'free_cash_flow' in row and not pd.isna(row["free_cash_flow"]) else None,
+            "eps": float(row["eps"]) if 'eps' in row and not pd.isna(row["eps"]) else None,
         })
 
 def run_sync_all():
@@ -655,13 +820,15 @@ def run_sync_all():
     
     def fetch_us_task(ticker):
         global progress_counter
+        # Introduce a micro delay to prevent rate limit blocks
+        time.sleep(0.3)
         fetch_and_update_stock(ticker)
         with progress_lock:
             progress_counter += 1
             pct = 15 + int(30 * progress_counter / total_us) # goes from 15% to 45%
             update_sync_state("running", f"미국 대표 주식 재무 정보 수집 중 ({progress_counter}/{total_us})...", pct)
             
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_us_task, t) for t in TOP_US_TICKERS]
         concurrent.futures.wait(futures)
         
@@ -684,13 +851,15 @@ def run_sync_all():
         
     def fetch_kr_task(ticker, name):
         global progress_counter
+        # Introduce a micro delay to prevent rate limit blocks
+        time.sleep(0.2)
         fetch_and_update_stock(ticker, name)
         with progress_lock:
             progress_counter += 1
             pct = 50 + int(25 * progress_counter / total_kr) # goes from 50% to 75%
             update_sync_state("running", f"한국 대표 주식 재무 정보 수집 중 ({progress_counter}/{total_kr})...", pct)
             
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_kr_task, t, n) for t, n in kr_tickers_with_names]
         concurrent.futures.wait(futures)
         
@@ -715,13 +884,15 @@ def run_sync_all():
         
     def fetch_etf_task(ticker, name):
         global progress_counter
+        # Introduce a micro delay to prevent rate limit blocks
+        time.sleep(0.2)
         fetch_and_update_stock(ticker, name)
         with progress_lock:
             progress_counter += 1
             pct = 80 + int(15 * progress_counter / total_etfs) # goes from 80% to 95%
             update_sync_state("running", f"ETF 정보 수집 및 분석 중 ({progress_counter}/{total_etfs})...", pct)
             
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(fetch_etf_task, t, n) for t, n in etfs_with_names]
         concurrent.futures.wait(futures)
         

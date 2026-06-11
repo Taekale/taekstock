@@ -12,6 +12,9 @@ db.init_db()
 import threading
 import time
 from datetime import datetime
+import yfinance as yf
+import concurrent.futures
+from .kis import kis_client
 
 def periodic_sync_thread():
     # Sleep 30 seconds after startup to allow systems to initialize
@@ -26,12 +29,85 @@ def periodic_sync_thread():
         # Sleep for 10 minutes (600 seconds)
         time.sleep(600)
 
+def realtime_top_active_sync_thread():
+    # Wait 15 seconds for systems to initialize
+    time.sleep(15)
+    while True:
+        try:
+            conn = db.get_db_connection()
+            cursor = conn.cursor()
+            # Fetch currently active Top 30 Buy or Sell tickers across all markets (US, KR, ETF_US, ETF_KR)
+            cursor.execute("""
+                SELECT DISTINCT ticker, market FROM stocks 
+                WHERE recommendation IN ('강력 매수', '매수', '강력 매도', '매도')
+            """)
+            active_stocks = [{"ticker": r["ticker"], "market": r["market"]} for r in cursor.fetchall()]
+            conn.close()
+            
+            if active_stocks:
+                # Limit to 50 active stocks to avoid rate limit
+                active_stocks = active_stocks[:50]
+                
+                def quick_update(stock):
+                    ticker = stock["ticker"]
+                    market = stock["market"]
+                    try:
+                        kis_data = None
+                        is_korean = ticker.endswith((".KS", ".KQ"))
+                        if is_korean and kis_client.is_available():
+                            kis_data = kis_client.fetch_domestic_stock_metrics(ticker)
+                            
+                        price = None
+                        volume = 0
+                        vp = None
+                        bar = None
+                        
+                        if kis_data:
+                            price = kis_data.get("price")
+                            volume = kis_data.get("volume", 0)
+                            vp = kis_data.get("volume_power")
+                            bar = kis_data.get("bid_ask_ratio")
+                            # fast_info is extremely fast (< 100ms)
+                            from .scanner import yf_session
+                            yf_ticker = yf.Ticker(ticker, session=yf_session)
+                            fast = yf_ticker.fast_info
+                            if fast:
+                                price = fast.get("lastPrice") or fast.get("last_price")
+                                volume = fast.get("lastVolume") or fast.get("last_volume") or fast.get("volume") or 0
+                                
+                        if price:
+                            db_conn = db.get_db_connection()
+                            db_conn.execute("""
+                                UPDATE stocks 
+                                SET price = ?, volume = ?, volume_power = ?, bid_ask_ratio = ?, updated_at = ?
+                                WHERE ticker = ?
+                            """, (price, int(volume) if volume else 0, vp, bar, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ticker))
+                            db_conn.commit()
+                            db_conn.close()
+                    except Exception as ex:
+                        print(f"Quick update failed for {ticker}: {ex}")
+                        
+                with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                    futures = [executor.submit(quick_update, s) for s in active_stocks]
+                    concurrent.futures.wait(futures)
+                
+                # Decoupled rank recalculation from the 15-second micro-sync to stabilize rankings.
+                # Ranks are updated during 10-minute periodic sync or manual search/sync actions.
+                pass
+        except Exception as e:
+            print(f"Error in realtime micro-sync thread: {e}")
+            
+        # Run every 15 seconds
+        time.sleep(15)
+
 app = FastAPI(title="Smart Stock Recommendation API")
 
 @app.on_event("startup")
 def startup_event():
     # Start the daemon thread for periodic updates
     threading.Thread(target=periodic_sync_thread, daemon=True).start()
+    # Start the daemon thread for 15-second active micro-sync
+    threading.Thread(target=realtime_top_active_sync_thread, daemon=True).start()
 
 # Enable CORS for local development
 app.add_middleware(
@@ -59,15 +135,15 @@ def read_root(visited: str = Cookie(None)):
         return response
     return {"message": "Welcome to Smart Stock Recommendation API. Static frontend files not found yet."}
 
-# Get Top 10 Buy and Top 10 Sell Stocks
-@app.get("/api/top10")
-def get_top10(market: str = "US"):
+# Get Top 30 Buy and Top 30 Sell Stocks
+@app.get("/api/top30")
+def get_top30(market: str = "US"):
     market = market.upper()
     if market not in ["US", "KR", "ETF_US", "ETF_KR"]:
         raise HTTPException(status_code=400, detail="Invalid market. Use 'US', 'KR', 'ETF_US', or 'ETF_KR'.")
         
-    buys = db.get_top10(market, order_by_buy=True)
-    sells = db.get_top10(market, order_by_buy=False)
+    buys = db.get_top30(market, order_by_buy=True)
+    sells = db.get_top30(market, order_by_buy=False)
     
     return {
         "market": market,
